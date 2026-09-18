@@ -11,6 +11,19 @@ slug="${1:?usage: spawn-team.sh <slug>}"
 PM_MODEL="${PM_MODEL:-opus}"; SA_MODEL="${SA_MODEL:-opus}"
 DEV_MODEL="${DEV_MODEL:-sonnet}"; TESTER_MODEL="${TESTER_MODEL:-sonnet}"
 
+# PM and workers drive agents through the herdr skill — make sure it exists
+# where spawned agents load skills (project .claude/skills or $CLAUDE_CONFIG_DIR/skills)
+if [ ! -e .claude/skills/herdr ] && [ ! -e "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/herdr" ]; then
+  echo "herdr skill not found — installing via skills CLI…"
+  if command -v bunx >/dev/null; then
+    bunx skills add herdrdev/herdr --skill herdr -y
+  else
+    npx -y skills add herdrdev/herdr --skill herdr -y
+  fi
+  [ -e .claude/skills/herdr ] || [ -e "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/herdr" ] \
+    || { echo "install ran but herdr skill still missing — install manually: npx skills add herdrdev/herdr --skill herdr"; exit 1; }
+fi
+
 # Forward this session's Claude settings (config dir e.g. ~/.claudez, provider, model mappings).
 # Never forward CLAUDE_CODE_* — those point at the orchestrating session.
 TEAM_ENV=()

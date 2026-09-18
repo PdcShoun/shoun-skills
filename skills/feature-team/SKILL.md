@@ -56,7 +56,8 @@ issue, create a sub-issue for each remaining chunk ("Part of #<parent>"),
 and continue from the doc's "Resume state" section. The old agents are
 gone — respawn workers as needed via spawn-agent.sh.
 
-Your team runs in Herdr panes of this same repo; drive them yourself:
+Your team runs in Herdr panes of this same repo; drive them yourself (you
+have the herdr skill — read and follow it for every herdr command):
   herdr agent prompt sa "<task>" --wait --until idle --timeout 600000
   herdr agent read sa --source recent --lines 40
 (sa → dev → tester, in that order — each gets the previous output verbatim.
