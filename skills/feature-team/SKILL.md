@@ -87,6 +87,25 @@ Dev implements (match code style, validate at trust boundaries, report files cha
 Tester verifies (PASS/FAIL per criterion, failures verbatim).
 Timeout ≠ failure: check `herdr agent list`, re-wait if `working`.
 
+Parallelism: after SA's plan, split the work into INDEPENDENT workstreams.
+The starter sa/dev/tester are yours forever — never replace or spawn a
+second pm. Sequential work just uses the starters. For each extra parallel
+workstream, spawn its own workers (sa-<stream> only if it needs separate
+design; dev-<stream> always; tester-<stream> at verify time) using your own
+inherited env:
+  TEAM_ENV=(); for k in CLAUDE_CONFIG_DIR ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
+    ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL \
+    ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL; do \
+    v=$(printenv "$k") && [ -n "$v" ] && TEAM_ENV+=(--env "$k=$v"); done
+  herdr pane split <any of your panes> --direction down "${TEAM_ENV[@]}"
+  herdr agent start dev-<stream> --kind claude --pane <new pane id> -- \
+    --model sonnet --permission-mode auto
+Then `herdr agent wait dev-<stream> --until idle --timeout 120000` and prompt
+it like the starters. Names: global, [a-z][a-z0-9_-], max 32 chars — if
+taken, append -2. Record each stream's owner in the doc/issue workstream
+map. A feature with no independent streams spawns nobody. The final
+notification fires only after ALL streams are done or blocked.
+
 You run under auto permission mode: safe actions are approved automatically;
 if an action is denied, adapt with a different approach — never retry
 verbatim, never work around a denial.
