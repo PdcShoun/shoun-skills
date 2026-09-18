@@ -15,47 +15,19 @@ test "${HERDR_ENV:-}" = 1 || fallback
 
 If not inside Herdr, run PM → SA → Dev → Tester yourself with native subagents (Plan for SA, general-purpose for the rest), tracking in the same docs/issue format, and report inline.
 
-## Setup — one workspace, four panes
+## Setup — one command
 
-Capture the current Claude settings so spawned agents run identically (config dir like `~/.claudez`, provider, model mappings). `agent start` has no `--env`; env rides on `workspace create` / `pane split`:
-
-```bash
-TEAM_ENV=()
-for k in CLAUDE_CONFIG_DIR ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
-         ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL \
-         ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL; do
-  v=$(printenv "$k") && [ -n "$v" ] && TEAM_ENV+=(--env "$k=$v")
-done
-```
-
-Never propagate `CLAUDE_CODE_*` / `CLAUDE_PID` / session IDs — they point at this session, not the new agents.
+Run the spawn script (next to this skill). It captures this session's Claude settings (config dir like `~/.claudez`, provider, model mappings — never `CLAUDE_CODE_*`), creates a `feature: <slug>` workspace, lays out four panes, starts the starters (`pm`/`sa` on opus, `dev`/`tester` on sonnet, all `--permission-mode auto`), and waits for them to boot:
 
 ```bash
-herdr workspace create --label "feature: <short slug>" --focus "${TEAM_ENV[@]}"
+bash .claude/skills/feature-team/spawn-team.sh <slug>
 ```
 
-Read `.result.workspace.workspace_id` (`$W`), `.result.root_pane.pane_id` (`$P1` — PM). Split the rest, capturing each `.result.pane.pane_id`:
-
-```bash
-herdr pane split "$P1" --direction right "${TEAM_ENV[@]}"   # P2 — SA
-herdr pane split "$P1" --direction down "${TEAM_ENV[@]}"    # P3 — Dev
-herdr pane split "$P2" --direction down "${TEAM_ENV[@]}"    # P4 — Tester
-```
-
-Model split: PM/SA reason on high, Dev/Tester execute on low. `--model opus/sonnet` resolves through the inherited `ANTHROPIC_DEFAULT_*_MODEL` mappings. Agents run with `--permission-mode auto` — the same auto-approval mode as this session, no bypass: safe actions proceed, risky ones get classified and can be denied (agents adapt or mark the task blocked instead of stalling).
-
-```bash
-herdr agent start pm     --kind claude --pane "$P1" -- --model opus --permission-mode auto
-herdr agent start sa     --kind claude --pane "$P2" -- --model opus --permission-mode auto
-herdr agent start dev    --kind claude --pane "$P3" -- --model sonnet --permission-mode auto
-herdr agent start tester --kind claude --pane "$P4" -- --model sonnet --permission-mode auto
-```
-
-Wait for all four: `herdr agent wait <name> --until idle --timeout 120000`.
+The final JSON line gives `workspace` (`$W`) and each agent's pane id. Model overrides: `PM_MODEL/SA_MODEL/DEV_MODEL/TESTER_MODEL` env vars. Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first.
 
 ## Handoff — give PM the whole task
 
-Send one kickoff prompt to PM (substitute the user's request), then your orchestration job is done:
+Pick the slug first. If `docs/features/<slug>.md` already exists with status in-progress or blocked, this is a resume of that feature (the PM briefing's RESUME CHECK handles it — the doc/issue carry all state; old panes/agents are gone). Send one kickoff prompt to PM (substitute the user's request and the slug), then your orchestration job is done:
 
 ```bash
 herdr agent prompt pm "<PM BRIEFING below, with <user request> filled in>" --wait --until idle --timeout 300000
@@ -75,6 +47,15 @@ Tell the user: request handed to PM, tracked at `<docs path>` (and issue `#N` if
 ```
 You are the PM and sole owner of this feature task: <user request>
 
+RESUME CHECK first: if docs/features/<slug>.md already exists with status
+in-progress or blocked, this is a RESUME, not a fresh start. Read the doc
+and its linked issue end to end, then verify the claimed state against
+reality (git status/diff, run the test suite, open the named files) and
+correct the doc where reality disagrees. Comment your resume plan on the
+issue, create a sub-issue for each remaining chunk ("Part of #<parent>"),
+and continue from the doc's "Resume state" section. The old agents are
+gone — respawn workers as needed via spawn-agent.sh.
+
 Your team runs in Herdr panes of this same repo; drive them yourself:
   herdr agent prompt sa "<task>" --wait --until idle --timeout 600000
   herdr agent read sa --source recent --lines 40
@@ -85,39 +66,43 @@ acceptance criterion, reporting PASS/FAIL. Never parallelize.)
 Roles: SA plans (files, approach, risks, max 20 lines, no code).
 Dev implements (match code style, validate at trust boundaries, report files changed).
 Tester verifies (PASS/FAIL per criterion, failures verbatim).
+All workers: report progress to PM as you go (what is done, what remains) —
+PM checkpoints it into doc/issue. Your pane is not a record; the doc is.
 Timeout ≠ failure: check `herdr agent list`, re-wait if `working`.
 
 Parallelism: after SA's plan, split the work into INDEPENDENT workstreams.
 The starter sa/dev/tester are yours forever — never replace or spawn a
 second pm. Sequential work just uses the starters. For each extra parallel
 workstream, spawn its own workers (sa-<stream> only if it needs separate
-design; dev-<stream> always; tester-<stream> at verify time) using your own
-inherited env:
-  TEAM_ENV=(); for k in CLAUDE_CONFIG_DIR ANTHROPIC_BASE_URL ANTHROPIC_AUTH_TOKEN \
-    ANTHROPIC_DEFAULT_OPUS_MODEL ANTHROPIC_DEFAULT_SONNET_MODEL \
-    ANTHROPIC_DEFAULT_HAIKU_MODEL ANTHROPIC_DEFAULT_FABLE_MODEL; do \
-    v=$(printenv "$k") && [ -n "$v" ] && TEAM_ENV+=(--env "$k=$v"); done
-  herdr pane split <any of your panes> --direction down "${TEAM_ENV[@]}"
-  herdr agent start dev-<stream> --kind claude --pane <new pane id> -- \
-    --model sonnet --permission-mode auto
-Then `herdr agent wait dev-<stream> --until idle --timeout 120000` and prompt
-it like the starters. Names: global, [a-z][a-z0-9_-], max 32 chars — if
-taken, append -2. Record each stream's owner in the doc/issue workstream
-map. A feature with no independent streams spawns nobody. The final
-notification fires only after ALL streams are done or blocked.
+design; dev-<stream> always; tester-<stream> at verify time):
+  bash .claude/skills/feature-team/spawn-agent.sh dev-<stream> <one of your pane ids> [model]
+The script splits a pane off yours, forwards your inherited env, starts
+claude with --permission-mode auto, waits until idle, and prints
+{name,pane,model} (default model sonnet). If the name is taken, rerun with
+-2 appended. Then prompt it like the starters. Record each stream's owner
+in the doc/issue workstream map. A feature with no independent streams
+spawns nobody. The final notification fires only after ALL streams are
+done or blocked.
 
 You run under auto permission mode: safe actions are approved automatically;
 if an action is denied, adapt with a different approach — never retry
 verbatim, never work around a denial.
 
-Track everything — the user watches ONLY these, never panes:
-1. docs/features/<slug>.md — create at kickoff: status line (requested →
-   in-progress → done/blocked), numbered acceptance criteria with
-   PASS/FAIL, files changed, short stage log (PM/SA/Dev/Tester, one line each).
-   Update it at every stage transition and at completion.
+Traceability — the user watches ONLY these, never panes. Every action,
+status change, and progress report must land here, because the doc/issue
+must be enough to resume the task cold after any outage:
+1. docs/features/<slug>.md — create at kickoff with sections: Status
+   (requested → in-progress → done/blocked), Criteria (numbered, PASS/FAIL),
+   Workstreams (owner agent, sub-issue link, status), Stage log (one line
+   per stage/progress report), Resume state (what is DONE, what REMAINS,
+   NEXT action — kept current at all times). Update it at every stage
+   transition AND whenever a worker reports progress. If the session dies,
+   this section is the next PM's starting point.
 2. If `git remote -v` shows a github.com remote: `gh issue create` at kickoff
-   with the criteria, link it in the doc, and `gh issue comment` per stage.
-   Do NOT push branches or open PRs unless the user's request said so.
+   with the criteria, link it in the doc, and keep it mirroring the doc —
+   PM comments current progress/status there at every checkpoint, and one
+   sub-issue per workstream ("Part of #<parent>") with worker progress as
+   comments. Do NOT push branches or open PRs unless the user's request said so.
 
 Completion contract: after Tester reports, write the final summary to doc +
 issue, set status done (or blocked with the reason), then notify:
