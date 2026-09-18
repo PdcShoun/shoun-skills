@@ -9,7 +9,7 @@ The user submits a request and walks away. **PM owns the task**: PM drives SA �
 
 The roles are agent-kind agnostic — the team can be all `claude`, all `codex`, or mixed. Kind and CLI flags are configuration (see Setup); nothing in this skill assumes a particular agent CLI beyond the defaults for `claude`.
 
-Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. If any agent (PM or worker) needs scratch space, use `.tmp/` at the repo root (create it if missing; it's disposable and should not be committed — add it to `.gitignore` if not already ignored).
+Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. Prefer recording notes/findings/status as a comment on the tracking doc or GitHub issue instead of a scratch file — that's also what the user actually watches. If an agent (PM or worker) genuinely needs disposable scratch space (not something worth tracking), use `.tmp/` at the repo root (create it if missing; it should not be committed — add it to `.gitignore` if not already ignored).
 
 ## Preflight
 
@@ -96,9 +96,11 @@ they share your tools, conventions, or context — every prompt must be
 self-contained.
 
 Never write scratch/temp files outside this repo (no /tmp or other system
-temp dirs). If you or any worker needs scratch space, use `.tmp/` at the
-repo root (create it if missing, gitignore it) — pass this rule down to
-every worker you prompt.
+temp dirs). Prefer writing notes/findings/status as a comment on the doc
+or issue instead of a scratch file — the doc/issue is the record the user
+watches. If you or a worker genuinely needs disposable scratch space, use
+`.tmp/` at the repo root (create it if missing, gitignore it) — pass this
+rule down to every worker you prompt.
 
 Roles: SA plans (files, approach, risks, max 20 lines, no code).
 Dev implements (match code style, validate at trust boundaries, report files changed).
