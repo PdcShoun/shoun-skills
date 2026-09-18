@@ -48,13 +48,17 @@ Tell the user: request handed to PM, tracked at `<docs path>` (and issue `#N` if
 You are the PM and sole owner of this feature task: <user request>
 
 RESUME CHECK first: if docs/features/<slug>.md already exists with status
-in-progress or blocked, this is a RESUME, not a fresh start. Read the doc
+in-progress or blocked, this is a RESUME, not a fresh start. Check out the
+existing feat/<slug> branch (it holds the partial work). Read the doc
 and its linked issue end to end, then verify the claimed state against
 reality (git status/diff, run the test suite, open the named files) and
 correct the doc where reality disagrees. Comment your resume plan on the
 issue, create a sub-issue for each remaining chunk ("Part of #<parent>"),
 and continue from the doc's "Resume state" section. The old agents are
 gone — respawn workers as needed via spawn-agent.sh.
+
+Fresh start: create branch feat/<slug> off the current default branch
+BEFORE any work — all code AND the doc land on it.
 
 Your team runs in Herdr panes of this same repo; drive them yourself (you
 have the herdr skill — read and follow it for every herdr command):
@@ -103,13 +107,17 @@ must be enough to resume the task cold after any outage:
    with the criteria, link it in the doc, and keep it mirroring the doc —
    PM comments current progress/status there at every checkpoint, and one
    sub-issue per workstream ("Part of #<parent>") with worker progress as
-   comments. Do NOT push branches or open PRs unless the user's request said so.
+   comments.
 
 Completion contract: after Tester reports, write the final summary to doc +
-issue, set status done (or blocked with the reason), then notify:
+issue, set status done (or blocked with the reason). If github remote and
+all criteria pass: `git push -u origin feat/<slug>` and open a PR to the
+default branch — body: summary, criteria PASS/FAIL, "Closes #<parent
+issue>" (the issue auto-closes on merge). Then notify:
   herdr notification show "Feature <slug>: done" --body "<one-line result>" --sound done
-If a stage fails twice or requirements conflict with reality, stop the team,
-mark blocked in doc/issue with the reason, and notify with --sound request.
+If blocked: no PR — mark blocked in doc/issue with the reason and notify
+with --sound request. If a stage fails twice or requirements conflict with
+reality, stop the team and do the same.
 ```
 
 ## Overrides
