@@ -29,20 +29,25 @@ validate_kind() {
 # actually set — no per-agent-kind knowledge — minus per-session vars that
 # point back at the launching agent.
 TEAM_ENV_PREFIXES="${TEAM_ENV_PREFIXES:-TEAM_ ANTHROPIC_ OPENAI_ AZURE_OPENAI_ GOOGLE_ GEMINI_ VERTEX_ XAI_ GROK_ MISTRAL_ DEEPSEEK_ OPENROUTER_ OLLAMA_ CODEX_ CURSOR_ COPILOT_ QWEN_ KIMI_ AMP_ OPENCODE_}"
-TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR PM_KIND SA_KIND DEV_KIND TESTER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL}"
+TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR PM_KIND SA_KIND DEV_KIND TESTER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR}"
 TEAM_ENV_DENY="${TEAM_ENV_DENY:-CLAUDE_CODE_ HERDR_}"
 
 # Fills the TEAM_ENV array with --env K=V pairs for `herdr` calls.
+# TEAM_ENV_KEYS is an explicit allowlist and wins over TEAM_ENV_DENY — the deny
+# list exists to stop *prefix*-matched vars (e.g. all of CLAUDE_CODE_) from
+# leaking into child panes, not to block a var someone named on purpose.
 TEAM_ENV=()
 build_team_env() {
   TEAM_ENV=()
-  local k v pfx want keep
+  local k v pfx want keep explicit
   while IFS= read -r k; do
-    keep=0
+    keep=0 explicit=0
     for pfx in $TEAM_ENV_PREFIXES; do case "$k" in "$pfx"*) keep=1 ;; esac; done
-    for want in $TEAM_ENV_KEYS; do [ "$k" = "$want" ] && keep=1; done
+    for want in $TEAM_ENV_KEYS; do [ "$k" = "$want" ] && keep=1 && explicit=1; done
     [ "$keep" = 1 ] || continue
-    for pfx in $TEAM_ENV_DENY; do case "$k" in "$pfx"*) keep=0 ;; esac; done
+    if [ "$explicit" = 0 ]; then
+      for pfx in $TEAM_ENV_DENY; do case "$k" in "$pfx"*) keep=0 ;; esac; done
+    fi
     [ "$keep" = 1 ] || continue
     v=$(printenv "$k") && [ -n "$v" ] || continue
     TEAM_ENV+=(--env "$k=$v")
