@@ -78,7 +78,9 @@ done
 jq -n --arg ws "$ws" --arg dir "$here" --arg default_branch "$(detect_default_branch)" \
   --arg p1 "$p1" --arg p2 "$p2" --arg p3 "$p3" --arg p4 "$p4" \
   --arg k1 "$PM_KIND" --arg k2 "$SA_KIND" --arg k3 "$DEV_KIND" --arg k4 "$TESTER_KIND" \
+  --argjson role_skills "$(role_skills_json)" \
   '{workspace: $ws, skill_dir: $dir, default_branch: $default_branch,
     panes: {pm: $p1, sa: $p2, dev: $p3, tester: $p4},
     kinds: {pm: $k1, sa: $k2, dev: $k3, tester: $k4},
+    role_skills: $role_skills,
     agents: ["pm", "sa", "dev", "tester"]}'

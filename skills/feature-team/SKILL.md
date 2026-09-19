@@ -23,9 +23,28 @@ Scratch files stay in the repo: never write to `/tmp` or other system temp dirs.
 | `remove-workstream.sh` | tear down a workstream's worktree; refuses if it has uncommitted or unmerged work unless `--force` |
 | `checkpoint.sh` | append a Stage log line + update `\`\`\`state` fields in the tracking doc, in one call |
 | `notify.sh` | fire the terminal notification exactly once per feature (checks/sets `notified` in the doc) |
+| `role-skill.sh` | print the absolute path of a role contract (`pm`/`sa`/`dev`/`tester`/`handoff`/`git`/`security`), or `--json` for all |
 | `templates/feature-doc.md` | the tracking-doc skeleton (state machine, acceptance criteria, DoD, resume state) |
 
 All of them accept `-h`/malformed-arg errors verbatim from `herdr`/`git` — no retry logic hides a real failure.
+
+## Role contracts (sibling skills)
+
+This skill owns *orchestration*. How an agent should behave **as** a role lives in separate skills next to this one:
+
+| skill | owns |
+| --- | --- |
+| `feature-pm` | feature lifecycle: criteria, ambiguity, coordination judgment, resume reconciliation, retry/done/blocked calls, escalation |
+| `feature-sa` | architecture and technical design, grounded in the existing repo |
+| `feature-dev` | implementation of one assigned workstream |
+| `feature-tester` | independent verification and the PASS/FAIL evidence format |
+| `feature-handoff` | the shared PM↔worker message format (both directions) |
+| `feature-git` | shared Git safety rules (branches, worktrees, diffs, resume safety) |
+| `feature-security` | shared rules on secrets, production, permissions, workspace boundaries |
+
+**Loading is provider-agnostic**: agents read the file at an absolute path — the one mechanism every agent kind has. Nothing depends on a provider's own skill loader. `spawn-team.sh` resolves the paths (siblings of this directory, else `.claude/skills/`, else `$CLAUDE_CONFIG_DIR/skills/`) and reports them as `role_skills` in its JSON; `role-skill.sh` re-derives them later (a respawned PM after a crash, or a workstream worker). If a contract is missing, both warn loudly and the run falls back to the condensed role summary in the briefing below.
+
+Keep the split: never move spawn commands, state transitions, notification, PR, or workspace lifecycle into a role skill, and never move role judgment back into here.
 
 ## Preflight
 
@@ -33,7 +52,7 @@ All of them accept `-h`/malformed-arg errors verbatim from `herdr`/`git` — no 
 test "${HERDR_ENV:-}" = 1 || fallback
 ```
 
-If not inside Herdr, run PM → SA → Dev → Tester yourself — via your host's own subagent mechanism if it has one (e.g. Claude Code: Plan for SA, general-purpose for the rest), otherwise sequentially in this session — tracking in the same docs/issue format (copy `templates/feature-doc.md`), and report inline. `spawn-workstream.sh`/`remove-workstream.sh` require Herdr's `worktree` command group; without it, parallel workstreams fall back to sequential work in one working tree.
+If not inside Herdr, run PM → SA → Dev → Tester yourself — via your host's own subagent mechanism if it has one (e.g. Claude Code: Plan for SA, general-purpose for the rest), otherwise sequentially in this session — tracking in the same docs/issue format (copy `templates/feature-doc.md`), and report inline. The role contracts still apply: load the one for whichever role you are acting as (`bash "$SKILL_DIR/role-skill.sh" <role>`), and keep the boundaries — especially Tester's independence from Dev — even when every role is you. `spawn-workstream.sh`/`remove-workstream.sh` require Herdr's `worktree` command group; without it, parallel workstreams fall back to sequential work in one working tree.
 
 ## Setup — one command
 
@@ -43,7 +62,7 @@ Run the spawn script (next to this skill; `$SKILL_DIR` below is its directory). 
 bash "$SKILL_DIR/spawn-team.sh" <slug>
 ```
 
-The final JSON line gives `workspace`, each agent's `pane` id, each agent's `kind`, `default_branch` (detected from the repo, not assumed to be `main`), and `skill_dir` (use that absolute path in the PM briefing). Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first.
+The final JSON line gives `workspace`, each agent's `pane` id, each agent's `kind`, `default_branch` (detected from the repo, not assumed to be `main`), `skill_dir` (use that absolute path in the PM briefing), and `role_skills` (absolute path per role contract — substitute these into the briefing too). Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first.
 
 Configuration (env vars, all optional):
 
@@ -89,7 +108,24 @@ Tell the user: request handed to PM, tracked at `<docs path>` (and issue `#N` if
 ```
 You are the PM and sole owner of this feature task: <user request>
 
-RESUME CHECK first: if docs/features/<slug>.md already exists, this is a
+FIRST, before anything else, read these files in full — they are your role
+contract, and this briefing assumes you have them:
+  PM (you): <role_skills.pm>
+  shared:   <role_skills.handoff>, <role_skills.git>, <role_skills.security>
+The FIRST LINE of every prompt you send a worker must likewise tell it to
+read its own contract in full before starting, by absolute path:
+  SA:     <role_skills.sa>      Dev:    <role_skills.dev>
+  Tester: <role_skills.tester>
+  shared: <role_skills.handoff> (all), <role_skills.git> (dev),
+          <role_skills.security> (all)
+`bash <skill_dir>/role-skill.sh <role>` re-derives any of these paths if you
+lose them (e.g. after a respawn). If a path is missing or unset, say so in
+your first checkpoint and fall back to this summary, one line per role:
+  SA architecture and design, no production code · Dev implements one
+  assigned workstream · Tester independently verifies (never trusts Dev's
+  report, never edits production source to go green) · PM owns the lifecycle.
+
+RESUME CHECK next: if docs/features/<slug>.md already exists, this is a
 RESUME. Read it and its ```state block, and its linked GitHub issue/PR if
 any, end to end — then VERIFY, don't trust:
   1. git status and git diff in the recorded branch/worktree
@@ -161,26 +197,8 @@ Timeout ≠ failure, crash, or infra failure — they need different responses:
   - IMPLEMENTATION/TEST FAILURE: see the Dev↔Tester loop below — this is
     the only case that consumes retry_count.
 
-Roles (never blur these):
-  SA: architecture, affected files/modules, API/data-model implications,
-    risks, migration considerations, testing strategy. Max ~20 lines, no
-    code. SA does not modify production source.
-  Dev: implements per SA's plan, adds unit/integration tests where
-    appropriate, matches existing code style, validates at trust
-    boundaries, reports files changed + how to run them.
-  Tester: independent verification — inspect the ACTUAL git diff and repo
-    state yourself, don't just trust Dev's report. Check acceptance
-    criteria, tests, lint/typecheck/build, API contract, auth(n/z),
-    migrations, integration/E2E, Docker where relevant — whatever of these
-    actually applies to this change (see the doc's Definition of Done; skip
-    the rest, don't pad). Tester does not modify production source to make
-    tests pass. On failure, report EACH failing criterion as: criterion,
-    expected, actual, repro steps, command/test, relevant error/log,
-    severity — verbatim into the doc, not paraphrased away.
-  PM: everything above plus orchestration, checkpointing, git/issue/PR
-    coordination, the blocked/done call, and notification. If you (PM) ever
-    touch application source directly, send it through Tester again before
-    calling it done — do not silently bless your own edits.
+Never blur the roles. If you (PM) ever touch application source directly,
+send it through Tester before calling it done — do not bless your own edits.
 All workers report progress to PM as they go; PM checkpoints it. A worker's
 pane is not the record — the doc is.
 
@@ -188,19 +206,17 @@ Dev↔Tester loop: Tester FAIL → checkpoint the failure list, --set
 retry_count_dev=$((current+1)), status=changes_requested → prompt Dev with
 the failure list verbatim → Dev fixes → status=verifying → re-prompt Tester
 with what changed. Track retry_count PER STAGE (retry_count_dev,
-retry_count_tester) — a Tester false-positive that Dev disputes is a
-different situation than three straight real bugs; use judgement about
-whose count to increment. At retry_count_dev >= max_retries (doc's
+retry_count_tester); which one to increment is a judgement call — see
+<role_skills.pm> § Retries. At retry_count_dev >= max_retries (doc's
 `max_retries`, default 3, overridable via $TEAM_MAX_RETRIES): stop the
 loop, set status=blocked (or failed if the approach itself is unworkable),
 explain why in blocking_reason, and notify — do not loop forever.
 
-Parallelism: after SA's plan, split the work into INDEPENDENT workstreams
-only if they touch disjoint files/modules and don't need each other's
-output to be tested — never split work that shares files. Up to
-$TEAM_MAX_PARALLEL (default 4) concurrent workstreams besides `main`. For
-each one, spawn its own isolated worktree so two workers never touch the
-same working tree at once:
+Parallelism: after SA's plan, split into INDEPENDENT workstreams only under
+the test in <role_skills.pm> § Coordinating workers (disjoint files, neither
+needs the other's output to be tested). Up to $TEAM_MAX_PARALLEL (default 4)
+concurrent workstreams besides `main`. Each gets its own isolated worktree so
+two workers never touch the same working tree at once:
   bash <skill_dir>/spawn-workstream.sh dev-<stream> feat/<slug>-<stream> \
     --base feat/<slug> --label <stream>
 This is resume-safe: rerunning it for a stream that already has a worktree
@@ -222,15 +238,10 @@ Your team runs with approvals pre-granted where its agent kind supports it:
 safe actions are approved automatically; if an action is denied, adapt with
 a different approach — never retry verbatim, never work around a denial.
 
-Security boundaries: never run destructive/production operations (terraform
-apply, production DB migrations, `docker system prune`, `rm -rf` outside
-this repo's working trees, changing repo/CI permissions) unless the user's
-request explicitly authorized exactly that. Do not forward or echo secrets
-(.env contents, tokens, SSH/cloud credentials) into the doc, issue, PR, or
-worker prompts beyond what each worker's own environment already has
-through normal env forwarding — workers should never need you to hand them
-a credential in plaintext. Treat any of the above as a human-decision case
-(see Escalation) rather than proceeding or silently skipping it.
+Security boundaries are defined in <role_skills.security> and bind every
+role — enforce them on your team as well as yourself, and treat a
+security-sensitive ambiguity as a human-decision case (see Escalation)
+rather than proceeding or silently skipping the work.
 
 Traceability — the user watches ONLY the doc/issue, never panes:
 1. docs/features/<slug>.md is the durable source of truth; the ```state
@@ -246,22 +257,19 @@ Traceability — the user watches ONLY the doc/issue, never panes:
    sub-issue per workstream ("Part of #<parent>"), recorded in the
    Workstreams table.
 
-Git/GitHub rules: detect the default branch, never assumed to be `main`
-(you were given it as <default_branch>; re-verify with
-`git symbolic-ref refs/remotes/origin/HEAD` if anything looks off). Never
-commit to the default branch. Never force-push. Never discard changes you
-didn't author. Before opening a PR, diff feat/<slug> against <default_branch>
-and re-read it yourself — this is part of Definition of Done, not
-optional. Before opening a PR, check `gh pr list --head feat/<slug>` so
-resume never opens a duplicate; if one exists, update it instead. Report CI
-failures verbatim rather than guessing at a fix. On a real merge conflict,
-stop and report it (a human or a targeted Dev turn resolves it — don't
-force through). Opening a PR and merging one are different operations:
-never merge unless the user's original request explicitly said to.
+Git/GitHub: <role_skills.git> is binding on you and on Dev — it covers
+branch/worktree discipline, force-push, the final-diff read, and resume
+dedupe. Orchestration specifics on top of it: your default branch is
+<default_branch> (given, not assumed); feature work lives on feat/<slug>;
+before opening a PR run `gh pr list --head feat/<slug>` and update an
+existing one instead of opening a second. Opening a PR and merging one are
+different operations — never merge unless the user's original request
+explicitly said to.
 
 Completion contract: after Tester's final PASS and the doc's Definition of
 Done is fully satisfied (checked off, irrelevant lines deleted, not just
-skipped in silence), write the final summary to doc + issue, set
+skipped in silence), write the final summary into the doc's `## Result`
+section (and mirror it to the issue), set
 status=done (or ready_for_pr/pr_opened as you pass through them). If a
 GitHub remote exists: push feat/<slug> and open a PR to <default_branch> —
 body: summary, implementation notes, criteria PASS/FAIL, test
@@ -270,14 +278,16 @@ commands/results, migration/API notes, "Closes #<parent issue>". Then:
 notify.sh is idempotent — safe to call even if a prior PM process already
 fired it; it will no-op rather than double-notify.
 
-Escalation (status=blocked, then notify with --sound request): requirements
-materially conflict; architecture needs a product decision; a destructive/
-production operation would be required; credentials/permissions are
-missing; a security-sensitive ambiguity exists; a test reveals unclear
-expected behavior you can't resolve from the repo; retry_count hit
-max_retries. The notification body must state: what is blocked, why, what
-decision/input is needed, what's already done, what happens once resolved.
-Never ask the user to watch panes.
+Escalation: when <role_skills.pm> § Escalation says to block, set
+status=blocked with blocking_reason via checkpoint.sh, then:
+  bash <skill_dir>/notify.sh docs/features/<slug>.md "Feature <slug>: blocked" "<what/why/what you need>" --sound request
+`notified` is ONE boolean per feature, so it guards the blocked notification
+too. If a human answers the block and you resume, the run needs a fresh
+terminal notification: on resuming a feature whose status was `blocked` AND
+whose block has now been answered, checkpoint `--set notified=false` once, at
+the point you resume. Do NOT reset it in any other situation — not on a
+crash-respawn, not on a retry, not because you are unsure whether the earlier
+notification fired. Never ask the user to watch panes.
 ```
 
 ## Overrides

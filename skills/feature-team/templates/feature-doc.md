@@ -68,6 +68,17 @@ gap on resume.
 
 <!-- append-only, newest last: "- <UTC timestamp> [stage] message" -->
 
+## Result
+
+<!--
+Written once, at a terminal state (done/blocked/failed/cancelled). This is
+what the user reads instead of the panes, and what a later reader sees first:
+what was built, each acceptance criterion PASS/FAIL with its evidence, the
+test/lint/build commands and results, migration/API notes, what was
+deliberately NOT done, and the PR link. If the state is blocked/failed, say
+what is blocked, why, and what decision unblocks it.
+-->
+
 ## Resume state
 
 A new PM process trusts this block only as a *starting hypothesis* — verify

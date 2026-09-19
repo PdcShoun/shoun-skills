@@ -115,6 +115,49 @@ team_env_export_cmd() {
   printf '%s' "$out"
 }
 
+# ---- Role-skill resolution ---------------------------------------------
+# The role contracts (feature-pm/sa/dev/tester + the shared feature-handoff/
+# git/security) are separate skills. Agents load them by READING THE FILE at
+# an absolute path — the one mechanism every agent kind has — so nothing here
+# depends on a provider's own skill loader. Resolution is a script, not a
+# guess in a prompt, because an agent that silently fails to find its contract
+# looks exactly like one that read it and ignored it.
+
+FEATURE_TEAM_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+# Absolute path to a sibling/installed role skill's SKILL.md, or empty.
+role_skill_path() {   # <skill-name>
+  local name="$1" c d
+  for c in "$FEATURE_TEAM_DIR/../$name/SKILL.md" \
+           "$PWD/.claude/skills/$name/SKILL.md" \
+           "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/$name/SKILL.md"; do
+    if [ -f "$c" ]; then
+      d=$(cd -- "$(dirname -- "$c")" && pwd -P) || return 1
+      echo "$d/SKILL.md"
+      return 0
+    fi
+  done
+  return 1
+}
+
+ROLE_SKILLS="pm sa dev tester handoff git security"
+
+# Emit the resolved paths as a JSON object; warn once per missing skill.
+role_skills_json() {
+  local r p out=() missing=()
+  for r in $ROLE_SKILLS; do
+    if p=$(role_skill_path "feature-$r"); then out+=("$r" "$p"); else missing+=("feature-$r"); fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "warn: role skill(s) not found: ${missing[*]} — agents will fall back to" \
+         "the condensed role summary in feature-team/SKILL.md. Install them" \
+         "alongside feature-team (they live next to it in the same skills repo)." >&2
+  fi
+  [ "${#out[@]}" -gt 0 ] || { echo '{}'; return 0; }
+  printf '%s\n' "${out[@]}" | jq -R . \
+    | jq -sc '[ . as $a | range(0; length; 2) | {key: $a[.], value: $a[.+1]} ] | from_entries'
+}
+
 # ---- Feature-doc helpers -----------------------------------------------
 # The tracking doc (docs/features/<slug>.md) carries a fenced ```state block
 # (see templates/feature-doc.md) with flat `key: value` lines — the
