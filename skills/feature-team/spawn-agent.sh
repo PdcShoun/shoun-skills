@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# Spawn one worker agent in a new pane split off a parent pane.
+# Spawn one worker agent in a new pane split off a parent pane. The new pane
+# SHARES the parent's working tree — safe only for a helper that runs
+# sequentially with (or reads without writing alongside) everything else in
+# that tree. For a second concurrent code-writing workstream, use
+# spawn-workstream.sh instead, which gives the worker its own Git worktree so
+# two agents never touch the same working tree at once.
 # Usage: spawn-agent.sh <name> <parent-pane-id> [agent-args...]
 #
 # Extra positional args are passed verbatim to the agent CLI after `--`
