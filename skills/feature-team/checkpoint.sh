@@ -7,14 +7,17 @@
 # Usage:
 #   checkpoint.sh <doc> "<stage message>" [--set key=value ...] [--comment]
 #
-# --comment mirrors the stage message as a `gh issue comment` on the doc's
-# recorded `issue:` field (only if `gh` is available and an issue number is
-# set) — use it for checkpoints worth surfacing to the user, not every one.
+# --comment mirrors the stage message as a comment on the doc's recorded
+# `issue:` field (only if a supported forge CLI is available and an issue
+# number is set) — use it for checkpoints worth surfacing to the user, not
+# every one. Works against GitHub, GitLab, or Gitea; see vcs.sh.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=agent-env.sh
 . "$here/agent-env.sh"
+# shellcheck source=vcs.sh
+. "$here/vcs.sh"
 
 doc="${1:?usage: checkpoint.sh <doc> \"<message>\" [--set key=value ...] [--comment]}"
 message="${2:?usage: checkpoint.sh <doc> \"<message>\" [--set key=value ...] [--comment]}"
@@ -40,11 +43,11 @@ for kv in "${sets[@]+"${sets[@]}"}"; do
   doc_set_field "$doc" "$k" "$v"
 done
 
-if [ "$comment" = 1 ] && command -v gh >/dev/null; then
+if [ "$comment" = 1 ] && vcs_available; then
   issue="$(doc_get_field "$doc" issue)"
   if [ -n "$issue" ] && [ "$issue" != "null" ]; then
-    gh issue comment "$issue" --body "$ts — $message" >/dev/null 2>&1 \
-      || echo "warn: gh issue comment failed (network/auth?) — doc updated regardless" >&2
+    vcs_issue_comment "$issue" "$ts — $message" >/dev/null 2>&1 \
+      || echo "warn: issue comment failed (network/auth?) — doc updated regardless" >&2
   fi
 fi
 

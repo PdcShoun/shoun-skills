@@ -70,13 +70,17 @@ Only the agent that owns a worktree writes in it. If you find work in a tree you
 A resumed run must not create a second copy of anything. Before creating, look:
 
 ```bash
-git branch --list 'feat/<slug>*'    # branch already exists?
-git worktree list                   # worktree already exists?
-gh pr list --head feat/<slug>       # PR already open? → update it, don't open another
-gh issue list --search '<slug>'     # issue already filed?
+git branch --list 'feat/<slug>*'                          # branch already exists?
+git worktree list                                          # worktree already exists?
+bash <skill_dir>/vcs.sh pr-list-head feat/<slug>            # PR/MR already open? → update it, don't open another
+bash <skill_dir>/vcs.sh issue-search '<slug>'               # issue already filed?
 ```
 
-Reuse what exists. One slug ⇒ one branch, one worktree per workstream, one issue, one PR.
+`vcs.sh` (in feature-team) is forge-agnostic — it detects GitHub/GitLab/Gitea from
+`origin` and drives `gh`/`glab`/`tea` accordingly, so these checks work the
+same regardless of which forge the repo is hosted on.
+
+Reuse what exists. One slug ⇒ one branch, one worktree per workstream, one issue, one PR/MR.
 
 ## Conflicts and CI
 

@@ -1,6 +1,6 @@
 ---
 name: feature-team
-description: "Fire-and-forget dev team (PM → SA → Dev → Tester) as Herdr agents of any supported kind (claude, codex, gemini, cursor, …). The PM owns the task end-to-end through an explicit state machine, checkpointing every transition to docs/features/<slug>.md and a mirrored GitHub issue; the user walks away and gets one notification when the feature reaches done/blocked/failed. Use for new feature requests, e.g. '/feature-team add bulk export'. Requires running inside Herdr."
+description: "Fire-and-forget dev team (PM → SA → Dev → Tester) as Herdr agents of any supported kind (claude, codex, gemini, cursor, …). The PM owns the task end-to-end through an explicit state machine, checkpointing every transition to docs/features/<slug>.md and a mirrored tracking issue (GitHub, GitLab, or Gitea — whichever forge `origin` points at); the user walks away and gets one notification when the feature reaches done/blocked/failed. Use for new feature requests, e.g. '/feature-team add bulk export'. Requires running inside Herdr."
 ---
 
 # Feature Team (Herdr) — fire-and-forget
@@ -9,7 +9,7 @@ The user submits a request and walks away. **PM owns the task**: PM drives SA �
 
 The roles are agent-kind agnostic — the team can be all `claude`, all `codex`, or mixed. Kind and CLI flags are configuration (see Setup); nothing in this skill assumes a particular agent CLI beyond the defaults for `claude`.
 
-Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. Prefer recording notes/findings/status as a comment on the tracking doc or GitHub issue instead of a scratch file — that's also what the user actually watches. If an agent (PM or worker) genuinely needs disposable scratch space (not something worth tracking), use `.tmp/` at the repo root (create it if missing; it should not be committed — add it to `.gitignore` if not already ignored).
+Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. Prefer recording notes/findings/status as a comment on the tracking doc or forge issue instead of a scratch file — that's also what the user actually watches. If an agent (PM or worker) genuinely needs disposable scratch space (not something worth tracking), use `.tmp/` at the repo root (create it if missing; it should not be committed — add it to `.gitignore` if not already ignored).
 
 **Design principle this skill follows**: anything that can be enforced deterministically (state transitions, notification idempotency, git isolation, doc formatting) is a script, not a paragraph of instructions an LLM has to remember to follow the same way every time. The scripts below are load-bearing; the PM briefing only covers judgment calls a script can't make.
 
@@ -23,6 +23,7 @@ Scratch files stay in the repo: never write to `/tmp` or other system temp dirs.
 | `remove-workstream.sh` | tear down a workstream's worktree; refuses if it has uncommitted or unmerged work unless `--force` |
 | `checkpoint.sh` | append a Stage log line + update `\`\`\`state` fields in the tracking doc, in one call |
 | `notify.sh` | fire the terminal notification exactly once per feature (checks/sets `notified` in the doc) |
+| `vcs.sh` | forge-agnostic issue/PR operations — detects GitHub/GitLab/Gitea from `origin` and drives `gh`/`glab`/`tea` accordingly |
 | `role-skill.sh` | print the absolute path of a role contract (`pm`/`sa`/`dev`/`tester`/`handoff`/`git`/`security`), or `--json` for all |
 | `templates/feature-doc.md` | the tracking-doc skeleton (state machine, acceptance criteria, DoD, resume state) |
 
@@ -74,6 +75,7 @@ Configuration (env vars, all optional):
 | `PM_ARGS` `SA_ARGS` `DEV_ARGS` `TESTER_ARGS` | per-role args override |
 | `PM_MODEL` `SA_MODEL` (default `opus`), `DEV_MODEL` `TESTER_MODEL` (default `sonnet`) | model for kind `claude`'s default args only |
 | `TEAM_ENV_PREFIXES` `TEAM_ENV_KEYS` `TEAM_ENV_DENY` | which env vars reach the team's panes (see `agent-env.sh`) |
+| `FEATURE_GIT_PROVIDER` | force the forge (`github`/`gitlab`/`gitea`) instead of auto-detecting it from `origin`'s hostname — needed for a self-hosted instance on a domain that doesn't contain "github"/"gitlab"/"gitea" (see `vcs.sh`) |
 | `TEAM_MAX_RETRIES` | default `3` — max Dev↔Tester fix/re-verify cycles per workstream before PM must mark `blocked`/`failed` |
 | `TEAM_MAX_PARALLEL` | default `4` — max concurrent workstreams (beyond the always-sequential `main`) |
 | `TEAM_STAGE_TIMEOUT_MS` | default `600000` — the timeout PM should pass to `herdr agent prompt --wait` for SA/Dev/Tester turns |
@@ -126,7 +128,7 @@ your first checkpoint and fall back to this summary, one line per role:
   report, never edits production source to go green) · PM owns the lifecycle.
 
 RESUME CHECK next: if docs/features/<slug>.md already exists, this is a
-RESUME. Read it and its ```state block, and its linked GitHub issue/PR if
+RESUME. Read it and its ```state block, and its linked forge issue/PR if
 any, end to end — then VERIFY, don't trust:
   1. git status and git diff in the recorded branch/worktree
   2. git log on that branch vs the default branch
@@ -137,11 +139,11 @@ any, end to end — then VERIFY, don't trust:
      the SAME branch/worktree via spawn-agent.sh/spawn-workstream.sh, never
      a new one)
   5. relevant tests, run them
-  6. the GitHub issue/PR state (open? merged? comments since last checkpoint?)
+  6. the forge issue/PR state (open? merged? comments since last checkpoint?)
 Reconcile the doc with whatever reality actually shows, correcting any
 ```state field that disagrees, then continue from `next_action`. Never
 create a second branch, worktree, issue, sub-issue, or PR for the same
-slug — reuse what `\`\`\`state` and `herdr worktree open`/`gh issue list`
+slug — reuse what `\`\`\`state` and `herdr worktree open`/`vcs.sh issue-search`
 show already exists. If `status` was already a terminal state (done/
 blocked/failed/cancelled), do not redo finished work or re-notify — confirm
 the terminal state still holds and stop (report to the outer session).
@@ -191,9 +193,10 @@ Timeout ≠ failure, crash, or infra failure — they need different responses:
     spawn-workstream.sh --branch <existing> to reopen an isolated one) and
     resume with the same prompt context from the doc. Not a retry-count
     strike against the stage — infrastructure dying isn't the agent failing.
-  - INFRA FAILURE (herdr/gh/git command itself errors — network, auth,
-    rate limit): checkpoint the error, retry once after confirming the
-    tool works (`herdr status`, `gh auth status`), else escalate.
+  - INFRA FAILURE (herdr/git/forge-CLI command itself errors — network,
+    auth, rate limit): checkpoint the error, retry once after confirming the
+    tool works (`herdr status`, the forge CLI's own auth-status command:
+    `gh auth status` / `glab auth status` / `tea login list`), else escalate.
   - IMPLEMENTATION/TEST FAILURE: see the Dev↔Tester loop below — this is
     the only case that consumes retry_count.
 
@@ -250,30 +253,38 @@ Traceability — the user watches ONLY the doc/issue, never panes:
    and additionally after: feature init, SA done, each workstream created,
    each Dev milestone, Tester start, Tester result, each retry cycle, PR
    creation, any blocking condition, final completion.
-2. If `git remote -v` shows a github.com remote: `gh issue create` at
-   kickoff (skip if resuming and `issue` is already set) with the criteria,
-   record the issue number via checkpoint.sh --set issue=<n>, and comment
-   progress at the checkpoints above via checkpoint.sh --comment. One
-   sub-issue per workstream ("Part of #<parent>"), recorded in the
-   Workstreams table.
+2. `bash <skill_dir>/vcs.sh detect` first (github/gitlab/gitea/none/unknown —
+   works off whatever `origin` points at, or `$FEATURE_GIT_PROVIDER` if set).
+   If it's not `none`/`unknown`: `bash <skill_dir>/vcs.sh issue-create
+   "<title>" "<body>"` at kickoff (skip if resuming and `issue` is already
+   set — check `bash <skill_dir>/vcs.sh issue-search "<slug>"` first), record
+   the issue number via checkpoint.sh --set issue=<n>, and comment progress
+   at the checkpoints above via checkpoint.sh --comment (it calls vcs.sh for
+   you). One sub-issue per workstream ("Part of #<parent>"), recorded in the
+   Workstreams table. If `unknown` (a forge on a domain vcs.sh can't
+   recognize and no CLI is already authenticated against it), skip issue/PR
+   tracking and rely on the doc alone — note this in the doc rather than
+   guessing at a provider.
 
-Git/GitHub: <role_skills.git> is binding on you and on Dev — it covers
+Git/forge: <role_skills.git> is binding on you and on Dev — it covers
 branch/worktree discipline, force-push, the final-diff read, and resume
 dedupe. Orchestration specifics on top of it: your default branch is
 <default_branch> (given, not assumed); feature work lives on feat/<slug>;
-before opening a PR run `gh pr list --head feat/<slug>` and update an
-existing one instead of opening a second. Opening a PR and merging one are
-different operations — never merge unless the user's original request
-explicitly said to.
+before opening a PR/MR run `bash <skill_dir>/vcs.sh pr-list-head feat/<slug>`
+and update an existing one instead of opening a second. Opening a PR/MR and
+merging one are different operations — never merge unless the user's
+original request explicitly said to.
 
 Completion contract: after Tester's final PASS and the doc's Definition of
 Done is fully satisfied (checked off, irrelevant lines deleted, not just
 skipped in silence), write the final summary into the doc's `## Result`
 section (and mirror it to the issue), set
-status=done (or ready_for_pr/pr_opened as you pass through them). If a
-GitHub remote exists: push feat/<slug> and open a PR to <default_branch> —
-body: summary, implementation notes, criteria PASS/FAIL, test
-commands/results, migration/API notes, "Closes #<parent issue>". Then:
+status=done (or ready_for_pr/pr_opened as you pass through them). If
+`vcs.sh detect` resolves to a supported forge: push feat/<slug> and open a
+PR/MR to <default_branch> via `bash <skill_dir>/vcs.sh pr-create
+<default_branch> feat/<slug> "<title>" "<body>"` — body: summary,
+implementation notes, criteria PASS/FAIL, test commands/results,
+migration/API notes, "Closes #<parent issue>". Then:
   bash <skill_dir>/notify.sh docs/features/<slug>.md "Feature <slug>: done" "<one-line result>" --sound done
 notify.sh is idempotent — safe to call even if a prior PM process already
 fired it; it will no-op rather than double-notify.

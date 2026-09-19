@@ -30,7 +30,7 @@ In this order, and never a worker's say-so:
 1. the actual working tree and `git status` / `git diff` / `git log`
 2. test and check output you ran or saw run
 3. `docs/features/<slug>.md` — durable record; its ```state block is a *starting hypothesis*, not a fact
-4. the GitHub issue and PR
+4. the forge issue and PR/MR (GitHub, GitLab, or Gitea — whichever is configured)
 5. worker reports — evidence to verify, not conclusions to adopt
 
 When any two disagree, reality wins and you correct the doc.

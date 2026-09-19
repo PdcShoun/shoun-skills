@@ -10,12 +10,12 @@ Binding on every role in a feature-team run. When one of these rules collides wi
 ## Secrets
 
 - **Access as little as you need.** Do not read `.env`, credential files, or key material out of curiosity, "to understand the config", or to check that something is set. If you need to know whether a variable exists, test for its presence, not its value.
-- **Never print a credential anywhere durable or shared**: not into the tracking doc, a GitHub issue or PR, a commit message, a log you paste back, a handoff, a worker prompt, or your own report. Redact to `<redacted>` / `FOO=***` when quoting output that contains one.
+- **Never print a credential anywhere durable or shared**: not into the tracking doc, a forge issue or PR/MR, a commit message, a log you paste back, a handoff, a worker prompt, or your own report. Redact to `<redacted>` / `FOO=***` when quoting output that contains one.
 - **Never commit a secret.** If one is already committed, do not "fix" it by deleting the line in a new commit — the history still has it. Stop and escalate; rotation is a human decision.
 - **Never hand a credential to another agent in plaintext.** Every agent already receives the provider/config environment it needs through feature-team's own env forwarding (`agent-env.sh`). If a worker seems to need a secret you would have to type out, that is an escalation, not a workaround.
 - Do not add real values to example/config files. `.env.example` gets placeholders.
 
-Watch especially for: `.env*`, `~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.ssh`, `~/.netrc`, `~/.docker/config.json`, GitHub/npm/PyPI tokens, `id_rsa`/`*.pem`/`*.key`, kubeconfigs, database URLs with embedded passwords, CI secret files, and anything under a `secrets/` directory.
+Watch especially for: `.env*`, `~/.aws`, `~/.config/gcloud`, `~/.azure`, `~/.ssh`, `~/.netrc`, `~/.docker/config.json`, GitHub/GitLab/Gitea/npm/PyPI tokens, `id_rsa`/`*.pem`/`*.key`, kubeconfigs, database URLs with embedded passwords, CI secret files, and anything under a `secrets/` directory.
 
 ## Production
 

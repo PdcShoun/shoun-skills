@@ -55,8 +55,8 @@ gap on resume.
 - [ ] AuthN/AuthZ and other security-sensitive paths checked
 - [ ] Docker build/run/healthcheck verified
 - [ ] Final diff reviewed against the default branch
-- [ ] This doc and the GitHub issue are up to date
-- [ ] PR opened (if a GitHub remote exists)
+- [ ] This doc and the tracking issue are up to date
+- [ ] PR/MR opened (if a supported forge remote is configured — GitHub, GitLab, or Gitea)
 
 ## Workstreams
 
@@ -82,7 +82,7 @@ what is blocked, why, and what decision unblocks it.
 ## Resume state
 
 A new PM process trusts this block only as a *starting hypothesis* — verify
-it against `git status`/`git log`/the GitHub issue/PR before acting on it,
+it against `git status`/`git log`/the forge issue/PR before acting on it,
 and correct any field that disagrees with reality.
 
 ```state
