@@ -9,7 +9,7 @@ The user submits a request and walks away. **PM owns the task**: PM drives SA �
 
 The roles are agent-kind agnostic — the team can be all `claude`, all `codex`, or mixed. Kind and CLI flags are configuration (see Setup); nothing in this skill assumes a particular agent CLI beyond the defaults for `claude`.
 
-Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. Prefer recording notes/findings/status as a comment on the tracking doc or forge issue instead of a scratch file — that's also what the user actually watches. If an agent (PM or worker) genuinely needs disposable scratch space (not something worth tracking), use `.tmp/` at the repo root (create it if missing; it should not be committed — add it to `.gitignore` if not already ignored).
+Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. Concise notes/findings/status go in the tracking doc's Progress Log or a forge comment — that's what the user actually watches. Detailed evidence a worker produces (full test output, a Tester or Dev report) is exactly what `.tmp/` at the repo root is for (create it if missing; it should not be committed — add it to `.gitignore` if not already ignored): write it there as `.tmp/<role>-report-<n>.md` (see feature-handoff) and have the doc's Progress Log reference the path instead of inlining the content.
 
 **Design principle this skill follows**: anything that can be enforced deterministically (state transitions, notification idempotency, git isolation, doc formatting) is a script, not a paragraph of instructions an LLM has to remember to follow the same way every time. The scripts below are load-bearing; the PM briefing only covers judgment calls a script can't make.
 
@@ -21,7 +21,7 @@ Scratch files stay in the repo: never write to `/tmp` or other system temp dirs.
 | `spawn-agent.sh` | spawn a helper in a pane that **shares** the caller's working tree — sequential or read-only work only |
 | `spawn-workstream.sh` | spawn a worker for an **independent, concurrent** code-writing workstream in its own Git worktree — resume-safe (reopens instead of duplicating) |
 | `remove-workstream.sh` | tear down a workstream's worktree; refuses if it has uncommitted or unmerged work unless `--force` |
-| `checkpoint.sh` | append a Stage log line + update `\`\`\`state` fields in the tracking doc, in one call |
+| `checkpoint.sh` | append a structured Progress Log stamp + update `\`\`\`state` fields in the tracking doc, in one call |
 | `notify.sh` | fire the terminal notification exactly once per feature (checks/sets `notified` in the doc) |
 | `vcs.sh` | forge-agnostic issue/PR operations — detects GitHub/GitLab/Gitea from `origin` and drives `gh`/`glab`/`tea` accordingly |
 | `role-skill.sh` | print the absolute path of a role contract (`pm`/`sa`/`dev`/`tester`/`handoff`/`git`/`security`), or `--json` for all |
@@ -147,6 +147,13 @@ slug — reuse what `\`\`\`state` and `herdr worktree open`/`vcs.sh issue-search
 show already exists. If `status` was already a terminal state (done/
 blocked/failed/cancelled), do not redo finished work or re-notify — confirm
 the terminal state still holds and stop (report to the outer session).
+If you are resuming actual work (not just confirming a terminal state),
+record it as its own stamp before continuing:
+  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md PM RESUMED \
+    --summary "Feature resumed from the persisted checkpoint." \
+    --evidence "Last commit: <sha>" --evidence "Branch: <branch>" \
+    --result "Repository state matches (or: differs from — say how) the persisted checkpoint." \
+    --next "<what happens next>"
 
 Fresh start: run `git status`; if the tree is dirty with unrelated changes,
 stop and report instead of branching over someone's uncommitted work.
@@ -162,11 +169,35 @@ behavior and you cannot resolve it from the repo/docs, do NOT guess: set
 status=blocked, blocking_reason=<the question>, and notify — see
 Escalation below. Do not invent requirements to fill a gap that matters.
 
-Record every transition with:
-  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md "<what happened>" \
-    --set current_stage=<stage> --set owner=<agent> [--set key=value ...] [--comment]
+Record every meaningful checkpoint — not every worker ping — as one concise,
+structured Progress Log stamp (see <role_skills.pm> for which checkpoints are
+meaningful and how to write a good one):
+  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md <STAGE> <STATUS> \
+    --summary "<1-2 sentences>" \
+    [--evidence "<item>"]... [--pm-verify "<item>"]... \
+    --result "<current outcome>" [--next "<next action>"] \
+    --set current_stage=<stage> --set owner=<agent> [--set key=value ...] \
+    [--comment]
+STAGE is one of PM SA DEV TESTER GIT CI PR SYSTEM; STATUS is one of STARTED
+PLANNED IN_PROGRESS PASS FAIL BLOCKED CHANGES_REQUESTED READY RETRY RESUMED
+DONE. --next is required unless STATUS is DONE. Keep --summary to 1-2
+sentences and put detail in --evidence bullets or, better, in a separate
+report file (e.g. `.tmp/tester-report-1.md` — see <role_skills.handoff>) that
+--evidence references by path; never paste a worker's full report into a
+checkpoint. checkpoint.sh dedupes an identical (stage, status, summary,
+result) tuple automatically, so re-checkpointing after a retry/replay/resume
+never produces a duplicate timeline entry.
+
 Pass --comment for checkpoints worth surfacing to the user (stage
-completions, blocks, PR open) — not for every worker progress ping. States:
+completions, blocks, PR open) — not for every worker progress ping. Example,
+after independently verifying a Tester PASS:
+  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md TESTER PASS \
+    --summary "All 7 acceptance criteria passed, including migration UP/DOWN verification." \
+    --evidence "Report: .tmp/tester-report-1.md" --evidence "Migration UP/DOWN and backfill verified" \
+    --pm-verify "Typecheck: 6/6 PASS" --pm-verify "API: 9/9 PASS" --pm-verify "Migration drift: none" \
+    --result "Criteria 1-7 PASS." --next "Ready for PR." --comment
+
+Doc `status` (the ```state field, distinct from a stamp's STATUS) follows:
 requested → planning → planned → implementing → verifying →
 (changes_requested loops back to implementing) → ready_for_pr → pr_opened →
 done, or blocked/failed/cancelled from anywhere. `blocked` = needs a human
@@ -205,15 +236,20 @@ send it through Tester before calling it done — do not bless your own edits.
 All workers report progress to PM as they go; PM checkpoints it. A worker's
 pane is not the record — the doc is.
 
-Dev↔Tester loop: Tester FAIL → checkpoint the failure list, --set
+Dev↔Tester loop: Tester FAIL → checkpoint a concise defect summary (STAGE
+TESTER, STATUS FAIL — 1-2 sentences plus the failing criteria numbers in
+--evidence, referencing Tester's full report file for the reproduction
+detail; never paste the whole report into the stamp), --set
 retry_count_dev=$((current+1)), status=changes_requested → prompt Dev with
-the failure list verbatim → Dev fixes → status=verifying → re-prompt Tester
-with what changed. Track retry_count PER STAGE (retry_count_dev,
-retry_count_tester); which one to increment is a judgement call — see
-<role_skills.pm> § Retries. At retry_count_dev >= max_retries (doc's
-`max_retries`, default 3, overridable via $TEAM_MAX_RETRIES): stop the
-loop, set status=blocked (or failed if the approach itself is unworkable),
-explain why in blocking_reason, and notify — do not loop forever.
+the failure list verbatim (in the handoff, not the doc) → Dev fixes →
+checkpoint DEV READY/CHANGES_REQUESTED as applicable → status=verifying →
+re-prompt Tester with what changed. Track retry_count PER STAGE
+(retry_count_dev, retry_count_tester); which one to increment is a judgement
+call — see <role_skills.pm> § Retries. At retry_count_dev >= max_retries
+(doc's `max_retries`, default 3, overridable via $TEAM_MAX_RETRIES): stop the
+loop, checkpoint the retry exhaustion, set status=blocked (or failed if the
+approach itself is unworkable), explain why in blocking_reason, and notify —
+do not loop forever.
 
 Parallelism: after SA's plan, split into INDEPENDENT workstreams only under
 the test in <role_skills.pm> § Coordinating workers (disjoint files, neither
@@ -247,12 +283,19 @@ security-sensitive ambiguity as a human-decision case (see Escalation)
 rather than proceeding or silently skipping the work.
 
 Traceability — the user watches ONLY the doc/issue, never panes:
-1. docs/features/<slug>.md is the durable source of truth; the ```state
-   block is what a cold-started PM trusts as a starting hypothesis (then
-   verifies). Update it via checkpoint.sh at every transition listed above,
-   and additionally after: feature init, SA done, each workstream created,
-   each Dev milestone, Tester start, Tester result, each retry cycle, PR
-   creation, any blocking condition, final completion.
+1. docs/features/<slug>.md is the durable source of truth: a ```state block
+   a cold-started PM trusts as a starting hypothesis (then verifies), and a
+   Progress Log that is a timeline of meaningful checkpoints — never a
+   transcript or a dump of a worker's report. Checkpoint via checkpoint.sh at
+   every transition listed above, and additionally after: feature init, SA
+   done, each workstream created, each Dev milestone, Tester start, Tester
+   result, each retry cycle, PR creation, any blocking condition, final
+   completion. Use judgment about what's meaningful (<role_skills.pm>) — not
+   every worker progress ping earns a stamp. A worker's full report (Dev's,
+   Tester's) belongs in its own file under `.tmp/` (e.g.
+   `.tmp/tester-report-<n>.md`, incrementing per attempt) — have the worker
+   write it there (<role_skills.handoff>) and reference that path from the
+   stamp's Evidence instead of copying the report's contents into the doc.
 2. `bash <skill_dir>/vcs.sh detect` first (github/gitlab/gitea/none/unknown —
    works off whatever `origin` points at, or `$FEATURE_GIT_PROVIDER` if set).
    If it's not `none`/`unknown`: `bash <skill_dir>/vcs.sh issue-create
@@ -278,19 +321,31 @@ original request explicitly said to.
 Completion contract: after Tester's final PASS and the doc's Definition of
 Done is fully satisfied (checked off, irrelevant lines deleted, not just
 skipped in silence), write the final summary into the doc's `## Result`
-section (and mirror it to the issue), set
+section (and mirror it to the issue — that section stays the detailed
+writeup; the DONE stamp below stays a 1-2 sentence pointer to it), set
 status=done (or ready_for_pr/pr_opened as you pass through them). If
 `vcs.sh detect` resolves to a supported forge: push feat/<slug> and open a
 PR/MR to <default_branch> via `bash <skill_dir>/vcs.sh pr-create
 <default_branch> feat/<slug> "<title>" "<body>"` — body: summary,
 implementation notes, criteria PASS/FAIL, test commands/results,
-migration/API notes, "Closes #<parent issue>". Then:
+migration/API notes, "Closes #<parent issue>". Checkpoint the completion:
+  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md PR DONE \
+    --summary "PR opened; all acceptance criteria PASS." \
+    --evidence "PR: <url>" --result "Feature complete — see ## Result." \
+    --set status=done --set pr=<url>
+Then:
   bash <skill_dir>/notify.sh docs/features/<slug>.md "Feature <slug>: done" "<one-line result>" --sound done
 notify.sh is idempotent — safe to call even if a prior PM process already
 fired it; it will no-op rather than double-notify.
 
-Escalation: when <role_skills.pm> § Escalation says to block, set
-status=blocked with blocking_reason via checkpoint.sh, then:
+Escalation: when <role_skills.pm> § Escalation says to block, checkpoint it
+and set status=blocked with blocking_reason:
+  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md PM BLOCKED \
+    --summary "<what is blocked, in 1-2 sentences>" \
+    --evidence "<what is already done>" \
+    --result "Blocked: <why, plainly>" --next "<the decision/input needed>" \
+    --set status=blocked --set blocking_reason="<the question>"
+then:
   bash <skill_dir>/notify.sh docs/features/<slug>.md "Feature <slug>: blocked" "<what/why/what you need>" --sound request
 `notified` is ONE boolean per feature, so it guards the blocked notification
 too. If a human answers the block and you resume, the run needs a fresh

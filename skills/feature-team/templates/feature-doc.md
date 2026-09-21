@@ -64,9 +64,61 @@ gap on resume.
 | --- | --- | --- | --- | --- | --- |
 | main | pm | (feature branch, no isolation needed for sequential work) | — | requested | — |
 
-## Stage log
+## Progress Log
 
-<!-- append-only, newest last: "- <UTC timestamp> [stage] message" -->
+<!--
+Append-only, newest last, via `checkpoint.sh` — never hand-edit this section
+and never paste a worker's full report into it. Each entry is one stamp:
+
+  [<UTC timestamp>] <STAGE> → <STATUS>
+
+  Summary:
+  <1-2 sentences>
+
+  Evidence:
+  - <artifact, report path, or key fact — not full command output>
+
+  PM verification:
+  - <independent check PM ran, if any — omit this section if none applied>
+
+  Result:
+  <current outcome, stated explicitly>
+
+  Next:
+  <concrete next action — omit only when STATUS is DONE>
+
+STAGE is one of: PM SA DEV TESTER GIT CI PR SYSTEM
+STATUS is one of: STARTED PLANNED IN_PROGRESS PASS FAIL BLOCKED
+CHANGES_REQUESTED READY RETRY RESUMED DONE
+
+Detailed evidence (full test output, stack traces, command transcripts)
+belongs in a separate report file (e.g. .tmp/tester-report-1.md), referenced
+here by path — not duplicated inline. A stamp for the same (stage, status,
+summary, result) is not repeated on retry/replay/resume; checkpoint.sh
+dedupes it automatically.
+
+Example:
+
+[2026-09-19 05:03 UTC] TESTER → PASS
+
+Summary:
+All 7 acceptance criteria passed, including migration UP/DOWN verification.
+
+Evidence:
+- Report: .tmp/tester-report-1.md
+- Migration UP/DOWN and existing-user backfill verified
+
+PM verification:
+- Typecheck: 6/6 PASS
+- API: 9/9 PASS
+- Migration drift: none
+
+Result:
+Criteria 1-7 PASS.
+
+Next:
+Ready for PR.
+-->
 
 ## Result
 

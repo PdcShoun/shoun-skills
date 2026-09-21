@@ -115,7 +115,12 @@ On a retry (Tester FAIL → Dev), the failure list goes into **Previous work** *
 
 `Outcome` is a claim, not a verdict. PM verifies it against the repository before checkpointing it (see feature-pm), and Tester verifies Dev's independently (see feature-tester). Write the report so that verification is *easy* — exact commands, exact paths, exact output — not so that it is unnecessary.
 
+## Where the report lives
+
+Send the report above as your reply to PM's prompt, **and** save the same content to a file under `.tmp/` at the repo root (create it if missing; it should be gitignored) so PM can reference it instead of copying it: `.tmp/<role>-report-<n>.md` for the `main` workstream, or `.tmp/<workstream-id>-<role>-report-<n>.md` for a parallel one — `<n>` increments per attempt (a Tester re-verification after a Dev fix is a new `<n>`, not an overwrite, so the history of what was actually checked stays intact). State the path you wrote in the report itself so PM doesn't have to guess it.
+
+PM's tracking doc (`docs/features/<slug>.md`) never contains your report's full text — only a 1-2 sentence summary plus a pointer to this file (see feature-team's Progress Log). If your report would be longer than the change it describes, cut the narration, not the evidence — the detail is what makes the file worth pointing at.
+
 ## Boundaries
 
-- Reporting is not checkpointing. Workers report; **PM** writes the tracking doc and issue (see feature-team's `checkpoint.sh`). A worker must not edit the doc's ```state block.
-- If your report would be longer than the change it describes, cut the narration, not the evidence.
+- Reporting is not checkpointing. Workers report; **PM** writes the tracking doc and issue (see feature-team's `checkpoint.sh`). A worker must not edit the doc's ```state block or its Progress Log.

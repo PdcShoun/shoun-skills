@@ -17,7 +17,7 @@ Read alongside this: **feature-handoff** (how you brief workers and read their r
 | Criteria | explicit, checkable acceptance criteria before any code is written |
 | Ambiguity | finding it early, resolving what you can from the repo, escalating what you can't |
 | Coordination | SA → Dev → Tester, plus any parallel workstreams |
-| Durable state | the tracking doc, the issue, the stage log — kept true |
+| Durable state | the tracking doc, the issue, the Progress Log — kept true, concise, and useful without opening every report |
 | Recovery | reconciling doc against reality on resume |
 | Retries | deciding whether a failure is worth another cycle, and whose |
 | The verdict | ready-for-verification, done, blocked, or failed |
@@ -67,6 +67,22 @@ Treat `Outcome: complete` as a claim. Cheap verifications that catch most of wha
 
 Then checkpoint what you verified, not what you were told.
 
+## Recording progress
+
+The Progress Log (`docs/features/<slug>.md`'s `## Progress Log` section, written via `checkpoint.sh`) is a timeline of meaningful state changes — not a transcript, and not a dump of a worker's report. A human should be able to scan it in a few seconds; a future PM process should be able to reconstruct the run's history from it alone. Every stamp should let a reader answer, in order: what happened, what was the result, what evidence exists, did PM independently verify anything, and what happens next.
+
+Write to it at meaningful checkpoints only — feature started, planning done, SA done, Dev started/done, Tester started/PASS/FAIL/BLOCKED, a retry, a PR opened, a CI result, a resume, done/blocked/cancelled. Not every worker ping, not every command you ran.
+
+- **Summary** — 1-2 sentences, always. If you're describing *how* something was verified rather than *what the result was*, it belongs in Evidence, not Summary.
+- **Evidence** — the handful of facts a reader needs to trust the result: a report path (`.tmp/tester-report-N.md`), a commit, a count. Never full command output, stack traces, or a source excerpt — that's what the report file is for.
+- **PM verification** — only what you independently re-checked, stated as plainly as what you ran and its result. If you did none, either omit the section or say so explicitly ("not independently re-run; relying on Tester's report") — never let the stamp imply verification that didn't happen.
+- **Result** — the current outcome, stated, never implied.
+- **Next** — a concrete action, not "continue" or "proceed".
+
+A worker's report is the detailed record; the stamp is a pointer to it plus your judgment. If you find yourself copying paragraphs from a report into `--evidence`, stop — reference the file instead (feature-handoff § Where the report lives).
+
+`checkpoint.sh` dedupes an identical (stage, status, summary, result) tuple automatically — a retry, a replayed command, or a resume that reconfirms the same state does not need special handling from you to avoid a duplicate entry.
+
 ## Timeouts, crashes, and failures are different
 
 Distinguishing these correctly is most of what keeps a long run from going off the rails. See feature-team § "Timeout ≠ failure" for the exact commands; the judgment is:
@@ -87,6 +103,8 @@ Escalate rather than spend the last retry when the failures are not converging: 
 Assume nothing carried over — you may be a new process with no memory of the run. Read the doc and the issue end to end, then **verify before acting**: the recorded branch/worktree really exists and holds the recorded commit; the recorded owner is actually alive; the tests really pass; the issue/PR really is in the state the doc claims; nothing landed since the last checkpoint.
 
 Correct every ```state field that disagrees with reality, then continue from `next_action`. Never create a second branch, worktree, issue, sub-issue, or PR for the same slug — look first (feature-git § Resume safety). If `status` was already terminal, confirm it still holds and stop; do not redo finished work and do not re-notify.
+
+Do not blindly trust the Progress Log's last entry either — it is a record of what a prior process believed, not a fact. Once you've verified reality and are actually resuming work (not just confirming a terminal state), write a `RESUMED` stamp before continuing, so the timeline shows the gap and what was true when you picked it back up.
 
 ## Deciding done
 
@@ -111,6 +129,8 @@ If you edited application source yourself at any point, it goes through Tester l
 - merge a PR unless the user's original request explicitly asked for a merge (opening ≠ merging)
 - notify twice, or notify with a summary you have not verified
 - report success you did not observe — an honest `blocked` is a better outcome than a false `done`
+- paste a worker's full report, command output, or stack trace into the Progress Log — summarize it there and put the detail in the report file it points to
+- imply independent verification in a `PM verification` line you didn't actually do
 
 ## Escalation
 

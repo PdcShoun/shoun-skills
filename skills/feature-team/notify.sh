@@ -28,5 +28,5 @@ fi
 
 herdr notification show "$title" --body "$body" --sound "$sound"
 doc_set_field "$doc" notified true
-ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-append_stage_log "$doc" "$ts [notify] sent: $title" || true
+status="DONE"; [ "$sound" = "request" ] && status="BLOCKED"
+append_progress_entry "$doc" SYSTEM "$status" "Notification sent: $title" "" "" "$body" "" || true

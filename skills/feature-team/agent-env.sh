@@ -196,22 +196,64 @@ doc_set_field() {   # <doc-file> <key> <value>
   ' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
-# Append one line to the end of "## Stage log" (before the next `## ` heading,
-# or at EOF if it's the last section). Keeps every checkpoint in one place in
-# a fixed format instead of free-form prose scattered through the doc.
-append_stage_log() {   # <doc-file> <line-text, no leading "- ">
-  local file="$1" text="$2" tmp
-  grep -q '^## Stage log[ \t]*$' "$file" 2>/dev/null || {
-    echo "warn: $file has no '## Stage log' section — cannot append" >&2; return 1;
-  }
+# Append one structured Progress Log stamp — see templates/feature-doc.md for
+# the exact shape (a "[<ts>] STAGE → STATUS" header, then Summary/Evidence/
+# PM verification/Result/Next). Inserted before the next `## ` heading, or at
+# EOF if the log is the doc's last section. Works against either heading name
+# so a pre-existing doc that still says "## Stage log" (the old one-line-per-
+# checkpoint format) keeps accumulating entries in the new format without a
+# rename/migration (see feature-pm § Backward Compatibility).
+#
+# Idempotent: a (stage, status, summary, result) tuple identical to one
+# already in the doc is not appended again — a hidden `<!-- progress-key -->`
+# marker after each stamp is how a retry, replay, or resume is told apart
+# from a genuinely new checkpoint (feature-pm § Idempotency). Returns 1 (and
+# updates nothing) when it skips a duplicate, so callers can tell the two
+# cases apart.
+append_progress_entry() {   # <doc-file> <STAGE> <STATUS> <summary> <evidence "- x\n- y"> <pmverify "- x\n- y"> <result> <next>
+  local file="$1" stage="$2" status="$3" summary="$4" evidence="$5" pmverify="$6" result="$7" next="$8"
+  local heading ts fp block tmp
+  if grep -q '^## Progress Log[ \t]*$' "$file" 2>/dev/null; then
+    heading="## Progress Log"
+  elif grep -q '^## Stage log[ \t]*$' "$file" 2>/dev/null; then
+    heading="## Stage log"
+  else
+    echo "warn: $file has no '## Progress Log' or '## Stage log' section — cannot append" >&2
+    return 1
+  fi
+
+  fp=$(printf '%s\x1e%s\x1e%s\x1e%s' "$stage" "$status" "$summary" "$result" | cksum | tr -d ' \t')
+  if grep -qF "<!-- progress-key: $fp -->" "$file" 2>/dev/null; then
+    echo "duplicate checkpoint ($stage -> $status, same summary/result already logged) — skipping entry" >&2
+    return 1
+  fi
+
+  ts=$(date -u +"%Y-%m-%d %H:%M UTC")
+  block="[$ts] $stage → $status"$'\n\n'"Summary:"$'\n'"$summary"
+  [ -n "$evidence" ] && block+=$'\n\n'"Evidence:"$'\n'"$evidence"
+  [ -n "$pmverify" ] && block+=$'\n\n'"PM verification:"$'\n'"$pmverify"
+  block+=$'\n\n'"Result:"$'\n'"$result"
+  [ -n "$next" ] && block+=$'\n\n'"Next:"$'\n'"$next"
+  block+=$'\n'"<!-- progress-key: $fp -->"
+
+  # Find the line to insert before: the next "## " heading after $heading, or
+  # one past EOF if $heading's section runs to the end of the file. Done as a
+  # line-number lookup (not a single awk pass emitting the block) because the
+  # block is a multi-line string, and BSD/mawk `awk -v` (unlike gawk) rejects
+  # an embedded newline in a -v-assigned value.
+  local insert_at
+  insert_at=$(awk -v heading="$heading" '
+    $0 == heading { in_sec=1; next }
+    in_sec && /^## / { print NR; f=1; exit }
+    { last=NR }
+    END { if (!f) print last + 1 }
+  ' "$file")
+
   tmp=$(mktemp "${file}.XXXXXX")
-  awk -v text="$text" '
-    /^## / {
-      if (in_sec && !inserted) { print "- " text; inserted=1 }
-      in_sec = ($0 == "## Stage log") ? 1 : 0
-      print; next
-    }
-    { print }
-    END { if (in_sec && !inserted) print "- " text }
-  ' "$file" > "$tmp" && mv "$tmp" "$file"
+  head -n "$((insert_at - 1))" "$file" > "$tmp"
+  {
+    printf '\n%s\n\n' "$block"
+  } >> "$tmp"
+  tail -n "+$insert_at" "$file" >> "$tmp"
+  mv "$tmp" "$file"
 }
