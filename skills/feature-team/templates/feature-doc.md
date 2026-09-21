@@ -206,6 +206,11 @@ tester_connection:
 tester_provider:
 tester_profile:
 tester_model:
+test_worker_kind:
+test_worker_connection:
+test_worker_provider:
+test_worker_profile:
+test_worker_model:
 reviewer_kind:
 reviewer_connection:
 reviewer_provider:
@@ -223,7 +228,13 @@ repository's or user's config has since changed, unless the user explicitly
 changes it or PM explicitly escalates it (e.g. Dev balanced → strong after
 a defect) — record any such change here AND as its own Progress Log stamp
 (STAGE `SYSTEM`, e.g. `MODEL_ESCALATED`), never silently. `reviewer_*`
-fields stay blank when `reviewer_enabled` is false.
+fields stay blank when `reviewer_enabled` is false. `test_worker_*` records
+the configuration Test Workers use when Tester (the Tester Lead) spawns them
+during verification (feature-team/SKILL.md § Testing architecture) — no pane
+is started for it at kickoff, unlike the other roles above, but it is
+resolved and persisted the same way so a worker spawned mid-run, or after a
+resume, doesn't silently re-derive against a repo config that has since
+changed.
 
 ### State values
 

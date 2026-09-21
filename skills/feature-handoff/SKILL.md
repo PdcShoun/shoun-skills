@@ -1,16 +1,16 @@
 ---
 name: feature-handoff
-description: "Internal shared contract for the feature-team skill — the wire format for messages between PM and SA/Dev/Tester. Not a standalone workflow. Read it when you are writing a handoff to a worker, or writing a report back to PM, inside a feature-team run. Orchestration — who is prompted when, and how the message is delivered — belongs to feature-team, not here."
+description: "Internal shared contract for the feature-team skill — the wire format for messages between PM and SA/Dev/Tester, and between Tester (the Tester Lead) and the Test Workers it spawns. Not a standalone workflow. Read it when you are writing a handoff to a worker, or writing a report back to your coordinator, inside a feature-team run. Orchestration — who is prompted when, and how the message is delivered — belongs to feature-team, not here."
 ---
 
 # Feature handoff contract
 
 Two artifacts, one each direction:
 
-- **Handoff** — PM → worker. "Here is what you must achieve and everything you need to achieve it."
-- **Report** — worker → PM. "Here is what I actually did, what I proved, and what is left."
+- **Handoff** — coordinator → worker (PM → SA/Dev/Tester, or Tester → its own Test Workers). "Here is what you must achieve and everything you need to achieve it."
+- **Report** — worker → coordinator. "Here is what I actually did, what I proved, and what is left."
 
-Both are plain markdown sent as the body of a prompt (or pasted into the tracking doc / issue). Nothing here says *how* the message is delivered — see feature-team for that.
+Both are plain markdown sent as the body of a prompt (or pasted into the tracking doc / issue). Nothing here says *how* the message is delivered — see feature-team for that. A Test Worker's report additionally carries the structured `worker_result` block feature-test-worker defines — that block, not narrative alone, is what the Tester Lead aggregates programmatically; the narrative report format below still applies around it.
 
 ## Why the format is fixed
 
@@ -36,7 +36,7 @@ Include a section only when it has real content; delete the rest rather than wri
 <id from the doc's Workstreams table>
 
 ## Role
-<sa | dev | tester> — read <abs path to your role skill> in full before starting
+<sa | dev | tester | test-worker> — read <abs path to your role skill> in full before starting
 
 ## Current state
 <state from the doc's ```state block>
@@ -104,7 +104,7 @@ On a retry (Tester FAIL → Dev), the failure list goes into **Previous work** *
 <the output, log excerpt, or diff hunk that backs the outcome above>
 
 ## Findings
-<per acceptance criterion where applicable; see feature-tester for the PASS/FAIL shape>
+<per acceptance criterion where applicable; see feature-tester (Tester Lead) or feature-test-worker (a Test Worker's narrower scope) for the PASS/FAIL shape>
 
 ## Remaining work
 <what is deliberately not done, and why>
@@ -113,14 +113,15 @@ On a retry (Tester FAIL → Dev), the failure list goes into **Previous work** *
 <what stopped you and what decision/input unblocks it, or "none">
 ```
 
-`Outcome` is a claim, not a verdict. PM verifies it against the repository before checkpointing it (see feature-pm), and Tester verifies Dev's independently (see feature-tester). Write the report so that verification is *easy* — exact commands, exact paths, exact output — not so that it is unnecessary.
+`Outcome` is a claim, not a verdict. PM verifies it against the repository before checkpointing it (see feature-pm), Tester (the Tester Lead) verifies Dev's independently (see feature-tester), and the Tester Lead verifies each Test Worker's the same way before aggregating it (see feature-test-worker). Write the report so that verification is *easy* — exact commands, exact paths, exact output — not so that it is unnecessary.
 
 ## Where the report lives
 
-Send the report above as your reply to PM's prompt, **and** save the same content to a file under `.tmp/` at the repo root (create it if missing; it should be gitignored) so PM can reference it instead of copying it: `.tmp/<role>-report-<n>.md` for the `main` workstream, or `.tmp/<workstream-id>-<role>-report-<n>.md` for a parallel one — `<n>` increments per attempt (a Tester re-verification after a Dev fix is a new `<n>`, not an overwrite, so the history of what was actually checked stays intact). State the path you wrote in the report itself so PM doesn't have to guess it.
+Send the report above as your reply to your coordinator's prompt, **and** save the same content to a file under `.tmp/` at the repo root (create it if missing; it should be gitignored) so it can be referenced instead of copied: `.tmp/<role>-report-<n>.md` for the `main` workstream, `.tmp/<workstream-id>-<role>-report-<n>.md` for a parallel one, or `.tmp/<worker-id>-report-<n>.md` for a Test Worker reporting to the Tester Lead — `<n>` increments per attempt (a Tester re-verification after a Dev fix is a new `<n>`, not an overwrite, so the history of what was actually checked stays intact). State the path you wrote in the report itself so your coordinator doesn't have to guess it.
 
-PM's tracking doc (`docs/features/<slug>.md`) never contains your report's full text — only a 1-2 sentence summary plus a pointer to this file (see feature-team's Progress Log). If your report would be longer than the change it describes, cut the narration, not the evidence — the detail is what makes the file worth pointing at.
+PM's tracking doc (`docs/features/<slug>.md`) never contains a worker's report full text — only a 1-2 sentence summary plus a pointer to this file (see feature-team's Progress Log). The same applies one level down: the Tester Lead's own report to PM references a Test Worker's report file rather than pasting it in. If your report would be longer than the change it describes, cut the narration, not the evidence — the detail is what makes the file worth pointing at.
 
 ## Boundaries
 
 - Reporting is not checkpointing. Workers report; **PM** writes the tracking doc and issue (see feature-team's `checkpoint.sh`). A worker must not edit the doc's ```state block or its Progress Log.
+- A Test Worker reports only to the Tester Lead that spawned it — never directly to PM, never directly to Dev. The Tester Lead is the one that reports to PM.

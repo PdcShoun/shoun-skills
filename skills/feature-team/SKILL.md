@@ -1,6 +1,6 @@
 ---
 name: feature-team
-description: "Fire-and-forget dev team (PM → SA → Dev → Tester) as Herdr agents of any supported kind (pi, claude, codex, gemini, cursor, …) — by default, every role runs as the SAME agent/provider that invoked this skill (no hardcoded default provider; see § Provider inheritance). The PM owns the task end-to-end through an explicit state machine, checkpointing every transition to docs/features/<slug>.md and a mirrored tracking issue (GitHub, GitLab, or Gitea — whichever forge `origin` points at); the user walks away and gets one notification when the feature reaches done/blocked/failed. Use for new feature requests, e.g. '/feature-team add bulk export'. Requires running inside Herdr."
+description: "Fire-and-forget dev team (PM → SA → Dev → Tester Lead, who parallelizes verification across narrow-scoped Test Workers) as Herdr agents of any supported kind (pi, claude, codex, gemini, cursor, …) — by default, every role runs as the SAME agent/provider that invoked this skill (no hardcoded default provider; see § Provider inheritance). The PM owns the task end-to-end through an explicit state machine, checkpointing every transition to docs/features/<slug>.md and a mirrored tracking issue (GitHub, GitLab, or Gitea — whichever forge `origin` points at); the user walks away and gets one notification when the feature reaches done/blocked/failed. Use for new feature requests, e.g. '/feature-team add bulk export'. Requires running inside Herdr."
 ---
 
 # Feature Team (Herdr) — fire-and-forget
@@ -22,6 +22,7 @@ Scratch files stay in the repo: never write to `/tmp` or other system temp dirs.
 | `spawn-team.sh` | one-shot: create workspace + panes, start pm/sa/dev/tester |
 | `spawn-agent.sh` | spawn a helper in a pane that **shares** the caller's working tree — sequential or read-only work only |
 | `spawn-workstream.sh` | spawn a worker for an **independent, concurrent** code-writing workstream in its own Git worktree — resume-safe (reopens instead of duplicating) |
+| `spawn-test-worker.sh` | spawn a parallel Test Worker for the Tester Lead's verification plan — resolves the `test_worker` role (default profile `fast`) and delegates to `spawn-agent.sh`/`spawn-workstream.sh` (see § Testing architecture) |
 | `remove-workstream.sh` | tear down a workstream's worktree; refuses if it has uncommitted or unmerged work unless `--force` |
 | `checkpoint.sh` | append a structured Progress Log stamp + update `\`\`\`state` fields in the tracking doc, in one call |
 | `notify.sh` | fire the terminal notification exactly once per feature (checks/sets `notified` in the doc) |
@@ -45,7 +46,8 @@ This skill owns *orchestration*. How an agent should behave **as** a role lives 
 | `feature-pm` | feature lifecycle: criteria, ambiguity, coordination judgment, resume reconciliation, retry/done/blocked calls, escalation |
 | `feature-sa` | architecture and technical design, grounded in the existing repo |
 | `feature-dev` | implementation of one assigned workstream |
-| `feature-tester` | independent verification and the PASS/FAIL evidence format |
+| `feature-tester` | the Tester Lead: builds the verification plan, decides whether to spawn Test Workers, aggregates results, runs final regression, owns the PASS/FAIL/BLOCKED verdict — see § Testing architecture |
+| `feature-test-worker` | a Test Worker's verification technique and structured `worker_result` for one narrow scope the Tester Lead assigned it — spawned dynamically, never a fixed team role |
 | `feature-reviewer` | optional final independent review (architecture fidelity, security, unintended changes, test coverage, maintainability, regression risk) — only runs when enabled, see § Optional Reviewer role |
 | `feature-handoff` | the shared PM↔worker message format (both directions) |
 | `feature-git` | shared Git safety rules (branches, worktrees, diffs, resume safety) |
@@ -61,7 +63,7 @@ Keep the split: never move spawn commands, state transitions, notification, PR, 
 test "${HERDR_ENV:-}" = 1 || fallback
 ```
 
-If not inside Herdr, run PM → SA → Dev → Tester yourself — via your host's own subagent mechanism if it has one (e.g. Claude Code: Plan for SA, general-purpose for the rest), otherwise sequentially in this session — tracking in the same docs/issue format (copy `templates/feature-doc.md`), and report inline. The role contracts still apply: load the one for whichever role you are acting as (`bash "$SKILL_DIR/role-skill.sh" <role>`), and keep the boundaries — especially Tester's independence from Dev — even when every role is you. `spawn-workstream.sh`/`remove-workstream.sh` require Herdr's `worktree` command group; without it, parallel workstreams fall back to sequential work in one working tree.
+If not inside Herdr, run PM → SA → Dev → Tester Lead yourself — via your host's own subagent mechanism if it has one (e.g. Claude Code: Plan for SA, general-purpose for the rest), otherwise sequentially in this session — tracking in the same docs/issue format (copy `templates/feature-doc.md`), and report inline. The role contracts still apply: load the one for whichever role you are acting as (`bash "$SKILL_DIR/role-skill.sh" <role>`), and keep the boundaries — especially Tester's independence from Dev — even when every role is you. `spawn-workstream.sh`/`remove-workstream.sh` require Herdr's `worktree` command group; without it, parallel workstreams fall back to sequential work in one working tree. The same applies to Test Workers: without Herdr's parallel panes there is nothing to spawn, so the Tester Lead verifies everything directly (feature-tester § Verifying directly) rather than attempting to fan out.
 
 ## Provider inheritance
 
@@ -121,9 +123,12 @@ Provider identity is a runtime concern, never inferred from the repo (no scannin
 Five independent concepts, never conflated and never used interchangeably:
 
 ```
-Role          PM / SA / DEV / TESTER / (optional) REVIEWER — a fixed
-              contract (feature-pm/sa/dev/tester/reviewer); never changes
-              with the model
+Role          PM / SA / DEV / TESTER / (dynamic) TEST_WORKER / (optional)
+              REVIEWER — a fixed contract (feature-pm/sa/dev/tester/
+              test-worker/reviewer); never changes with the model.
+              TEST_WORKER is not a fixed team-member pane like the others —
+              it is spawned dynamically, on demand, by Tester (the Tester
+              Lead) — see § Testing architecture
 Connection    a named account/CLI binding on THIS machine (com1, com2, ...)
               — defined only in user config; never in repo config (see
               § Repository portability)
@@ -156,11 +161,12 @@ discover late:
 
 ```yaml
 roles:
-  pm:       { profile: strong }    # scope/acceptance-criteria/orchestration judgment
-  sa:       { profile: top }       # architecture — a wrong call here gets implemented AND "tested"
-  dev:      { profile: balanced }  # constrained by SA's design + acceptance criteria
-  tester:   { profile: balanced }  # constrained by the criteria + the actual diff
-  reviewer: { profile: strong }    # optional — see § Optional Reviewer role
+  pm:          { profile: strong }    # scope/acceptance-criteria/orchestration judgment
+  sa:          { profile: top }       # architecture — a wrong call here gets implemented AND "tested"
+  dev:         { profile: balanced }  # constrained by SA's design + acceptance criteria
+  tester:      { profile: balanced }  # the Tester Lead — plans, aggregates, owns the verdict
+  test_worker: { profile: fast }      # narrow, single-purpose verification scope — see below
+  reviewer:    { profile: strong }    # optional — see § Optional Reviewer role
 ```
 
 A wrong SA decision propagates into Dev's implementation and Tester's
@@ -168,6 +174,17 @@ verification of the *wrong target* — the most expensive kind of error to
 catch late — so SA defaults to `top`, one tier above PM. Reviewer is
 optional; most features run with no Reviewer at all, which is normal, not
 a gap (§ Optional Reviewer role).
+
+`test_worker` is intentionally a **separate semantic role from `tester`**,
+resolved through the exact same connection/provider/profile/model chain
+(§ Configuration precedence) under its own role name — never conflated with
+the Tester Lead's own profile. A Test Worker's scope is narrow and bounded
+by design (the Tester Lead already decided what it verifies), so a cheaper
+model is normally sufficient even though the Tester Lead itself stays at
+`balanced` for the planning/aggregation judgment a worker never has to
+make. Escalate a specific worker's profile per-feature the same way any
+other role escalates (§ Model escalation) when its actual risk warrants
+it — never as a blanket policy change.
 
 ### Do not over-optimize by using weak models everywhere
 
@@ -204,10 +221,11 @@ connections:
     provider: deepseek
 defaults:
   roles:
-    pm:     { connection: com1, profile: strong }
-    sa:     { connection: com1, profile: top }
-    dev:    { connection: com2, profile: balanced }
-    tester: { connection: com2, profile: balanced }
+    pm:          { connection: com1, profile: strong }
+    sa:          { connection: com1, profile: top }
+    dev:         { connection: com2, profile: balanced }
+    tester:      { connection: com2, profile: balanced }
+    test_worker: { connection: com2, profile: fast }
 providers:                       # optional: config-defined model catalogs,
   openai:                        # an alternative to <VENDOR>_<PROFILE>_MODEL
     models: { top: gpt-5.1, strong: gpt-5.1, balanced: gpt-5.1-mini }
@@ -225,6 +243,10 @@ reviewer:
   profile: strong
 roles:
   dev: { connection: com2, profile: balanced }
+  test_worker: { profile: fast }   # see § Testing architecture
+testing:                          # optional — see § Testing configuration;
+  parallel:                       # every field below has a built-in default,
+    max_workers: 3                # so this whole block may be omitted
 ```
 
 **Feature config** (`docs/features/<slug>.md`'s `\`\`\`state` block) — the
@@ -270,16 +292,18 @@ Optional, explicit, never inferred from vague signals — `$FEATURE_COMPLEXITY`
 or the repo config's `complexity:` field, default `normal`:
 
 ```
-              PM       SA     DEV          TESTER   REVIEWER
-simple        strong   strong fast         fast     strong
-normal        strong   top    balanced     balanced strong
-complex       strong   top    balanced*    strong   strong
-high-risk     strong   top    strong       strong   strong (or top)
+              PM       SA     DEV          TESTER   TEST_WORKER  REVIEWER
+simple        strong   strong fast         fast     fast         strong
+normal        strong   top    balanced     balanced fast         strong
+complex       strong   top    balanced*    strong   fast         strong
+high-risk     strong   top    strong       strong   balanced     strong (or top)
 ```
 
 *complex's DEV defaults to `balanced`; escalate to `strong` explicitly for a
 specific feature if its actual risk warrants it — don't make `complex`
-mean "everything gets a bigger model" by default.
+mean "everything gets a bigger model" by default. TEST_WORKER stays `fast`
+through `complex` (each worker's scope is narrow by construction, regardless
+of the feature's overall complexity) and steps up only at `high-risk`.
 
 This table is only the **built-in default** tier (precedence tier 6) — an
 explicit override, repo config, or user config profile for a role always
@@ -491,11 +515,19 @@ Repo config: ~/projects/my-app/.feature-team/config.yaml
 Complexity: normal
 Reviewer: disabled
 
-Role       Connection   Provider    Profile     Model            Source
-pm         com1         openai      strong      gpt-5.1          user
-sa         com1         openai      top         gpt-5.1          repository
-dev        com2         deepseek    balanced    deepseek-chat    repository
-tester     com2         deepseek    balanced    deepseek-chat    user
+Role         Connection   Provider    Profile     Model            Source
+pm           com1         openai      strong      gpt-5.1          user
+sa           com1         openai      top         gpt-5.1          repository
+dev          com2         deepseek    balanced    deepseek-chat    repository
+tester       com2         deepseek    balanced    deepseek-chat    user
+test_worker  com2         deepseek    fast        deepseek-chat    default
+
+Testing (Tester Lead's parallel-verification policy — § Testing configuration):
+  parallel: enabled=true max_workers=3 min_parallel_tasks=2
+  strategy: smoke_first=true parallel_independent_checks=true early_failure_feedback=true
+            dependency_aware_cancellation=true e2e_when_required=true final_regression=true
+  retry:    max_attempts=2
+  timeout:  smoke=120000ms unit=300000ms integration=600000ms e2e=900000ms worker=1200000ms
 ```
 
 `Source` names where each role's effective binding actually came from
@@ -549,11 +581,109 @@ Test framework        whatever this repository already uses — discovered,
                       pytest, npm test, or any other named tool)
 ```
 
-SA proposes the initial strategy while planning (feature-sa's `## Verification strategy` output section); PM records it into the doc's `## Verification Strategy` section and the per-criterion `[level: ..., required: ...]` tags (see `templates/feature-doc.md`) before Dev starts. Tester re-confirms or adjusts it during verification — Tester is the one actually running checks against the real diff, and may find a level insufficient (or more than needed) once it exists.
+SA proposes the initial strategy while planning (feature-sa's `## Verification strategy` output section); PM records it into the doc's `## Verification Strategy` section and the per-criterion `[level: ..., required: ...]` tags (see `templates/feature-doc.md`) before Dev starts. Tester (the Tester Lead) re-confirms or adjusts it during verification — the Tester Lead and any Test Workers it spawns are the ones actually running checks against the real diff, and may find a level insufficient (or more than needed) once it exists.
 
 E2E is a *conditional* requirement, not a default: it applies only when a user-facing/multi-step workflow, an explicit acceptance criterion, or a Tester-identified risk needs it. A feature with no such criterion needs no E2E block at all — omit it from the doc rather than writing `required: no` everywhere.
 
-Discovering the repo's actual E2E framework (or confirming none exists) is SA's job at planning and Tester's job at verification, both via the same discovery list (feature-sa § Inspect before you design, feature-tester § Discover the repo's own commands): package manifest, `Makefile`/`Taskfile`/`justfile`, README/CONTRIBUTING, CI config, test directories, and framework-specific config files (`playwright.config.*`, `cypress.config.*`, or whatever else the repo actually uses). If E2E is required and no framework exists, that is a flag to PM (feature-sa § Flagging, feature-tester's Report `recommendation: ESCALATE`) — introducing a new E2E framework is an infrastructure decision, never something SA or Tester adopts unilaterally.
+Discovering the repo's actual E2E framework (or confirming none exists) is SA's job at planning and the Tester Lead's (or the E2E worker's, if one is spawned) job at verification, both via the same discovery list (feature-sa § Inspect before you design, feature-test-worker § Discover the repo's own commands): package manifest, `Makefile`/`Taskfile`/`justfile`, README/CONTRIBUTING, CI config, test directories, and framework-specific config files (`playwright.config.*`, `cypress.config.*`, or whatever else the repo actually uses). If E2E is required and no framework exists, that is a flag to PM (feature-sa § Flagging, feature-test-worker's Report `recommendation: ESCALATE`) — introducing a new E2E framework is an infrastructure decision, never something SA, Tester, or a Test Worker adopts unilaterally.
+
+## Testing architecture
+
+Testing is a parallel, feedback-oriented process the Tester Lead orchestrates — not a single sequential Tester running one giant test command:
+
+```text
+DEV
+ ↓
+TEST ORCHESTRATOR (Tester — the Tester Lead, feature-tester)
+ │
+ ├── Static / Smoke Worker
+ ├── Unit / API Worker
+ ├── Integration Worker
+ └── E2E Worker            (feature-test-worker — only the types this
+ │                          feature's diff actually needs, never all of them)
+ ↓
+Results Aggregator (the Tester Lead, still)
+ │
+ ├── PASS → final regression (once, by the Tester Lead) → PM
+ └── FAIL → PM → Dev, while independent workers keep running
+```
+
+The Tester Lead remains the sole decision-maker and the sole verdict: Test Workers are independent verification executors that report a structured `worker_result` back to the Tester Lead, and **must never mark the feature — or even their own scope — complete**. See `feature-tester` for the Tester Lead's planning/scaling/aggregation/dependency-cancellation/retry/timeout responsibilities, and `feature-test-worker` for the verification technique and result contract a worker (or the Tester Lead itself, for small scopes) actually executes.
+
+This is an optimization on wall-clock time and fast feedback, never a relaxation of what "verified" means (feature-tester's Never list) — the same acceptance criteria, the same required verification levels, the same final regression pass are all still required; they just don't have to run one after another when they don't depend on each other.
+
+### Testing configuration
+
+```yaml
+testing:
+  parallel:
+    enabled: true
+    max_workers: 3
+    min_parallel_tasks: 2
+  strategy:
+    smoke_first: true
+    parallel_independent_checks: true
+    early_failure_feedback: true
+    dependency_aware_cancellation: true
+    e2e_when_required: true
+    final_regression: true
+  retry:
+    max_attempts: 2
+  timeout:
+    smoke: 2m
+    unit: 5m
+    integration: 10m
+    e2e: 15m
+    worker: 20m
+```
+
+Every field has a built-in default (shown above) — a repository only needs to set `.feature-team/config.yaml`'s `testing:` block to override one. `config-lib.sh`'s `testing_*` functions are the only place these defaults live (never re-derived elsewhere), each overridable by an explicit env var first, then this repo-config path, then the built-in default — same three-tier shape as every other config value in this skill:
+
+| env var | repo config path | default |
+| --- | --- | --- |
+| `TESTING_PARALLEL_ENABLED` | `testing.parallel.enabled` | `true` |
+| `TESTING_MAX_WORKERS` | `testing.parallel.max_workers` | `3` |
+| `TESTING_MIN_PARALLEL_TASKS` | `testing.parallel.min_parallel_tasks` | `2` |
+| `TESTING_SMOKE_FIRST` | `testing.strategy.smoke_first` | `true` |
+| `TESTING_PARALLEL_INDEPENDENT_CHECKS` | `testing.strategy.parallel_independent_checks` | `true` |
+| `TESTING_EARLY_FAILURE_FEEDBACK` | `testing.strategy.early_failure_feedback` | `true` |
+| `TESTING_DEPENDENCY_AWARE_CANCELLATION` | `testing.strategy.dependency_aware_cancellation` | `true` |
+| `TESTING_E2E_WHEN_REQUIRED` | `testing.strategy.e2e_when_required` | `true` |
+| `TESTING_FINAL_REGRESSION` | `testing.strategy.final_regression` | `true` |
+| `TESTING_RETRY_MAX_ATTEMPTS` | `testing.retry.max_attempts` | `2` |
+| `TESTING_TIMEOUT_SMOKE_MS` | `testing.timeout.smoke` | `2m` |
+| `TESTING_TIMEOUT_UNIT_MS` | `testing.timeout.unit` | `5m` |
+| `TESTING_TIMEOUT_INTEGRATION_MS` | `testing.timeout.integration` | `10m` |
+| `TESTING_TIMEOUT_E2E_MS` | `testing.timeout.e2e` | `15m` |
+| `TESTING_TIMEOUT_WORKER_MS` | `testing.timeout.worker` | `20m` (also the fallback for any stage without its own entry) |
+
+`bash <skill_dir>/config.sh show` prints the effective testing configuration alongside the per-role model table (§ Configuration display); `config.sh save` persists it into `.feature-team/config.yaml`'s `testing:` block the same way it persists resolved role models (§ Explicit "remember" behavior).
+
+### Scaling rules
+
+```text
+0-1 independent verification tasks   → Tester Lead handles it directly
+2 independent tasks                  → may use up to 2 workers
+3+ independent tasks                 → workers up to max_workers
+Large/high-risk feature              → may use a configured higher concurrency
+```
+
+Never spawn a worker simply because one is available — spawn when it reduces wall-clock time or provides real independent verification. Test Workers cannot spawn further agents themselves (feature-test-worker's Never list) — only the Tester Lead spawns test workers, bounding the tree the same way `TEAM_MAX_PARALLEL` bounds Dev workstreams (§ Prevent runaway agent spawning).
+
+### Prevent runaway agent spawning
+
+The following limits apply together, and none of them is optional:
+
+```text
+global agent concurrency limit        (herdr's own)
+team worker limit                     TEAM_MAX_PARALLEL (Dev workstreams)
+testing worker limit                  testing.parallel.max_workers
+per-feature retry limit               TEAM_MAX_RETRIES / testing.retry.max_attempts
+worker timeout                        testing.timeout.<stage|worker>
+overall feature timeout, if supported by the runtime
+```
+
+`Tester Lead → can spawn Test Workers. Test Worker → cannot spawn anything.` A bounded, two-level tree — never a Tester Lead that spawns another Tester Lead, and never a worker that spawns a worker.
 
 ## Setup — one command
 
@@ -563,7 +693,7 @@ Run the spawn script (next to this skill; `$SKILL_DIR` below is its directory). 
 bash "$SKILL_DIR/spawn-team.sh" <slug>
 ```
 
-The final JSON line gives `workspace`, each agent's `pane` id, each agent's `kind`, `caller_kind` (what was detected/declared, or `null`), `default_branch` (detected from the repo, not assumed to be `main`), `skill_dir` (use that absolute path in the PM briefing), and `role_skills` (absolute path per role contract — substitute these into the briefing too). Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first. The script also logs `[TEAM] caller=... pm=... sa=... dev=... tester=...` to stderr so a failed/unexpected provider choice is diagnosable without secrets ever appearing in the log.
+The final JSON line gives `workspace`, each agent's `pane` id, each agent's `kind`, `caller_kind` (what was detected/declared, or `null`), `default_branch` (detected from the repo, not assumed to be `main`), `skill_dir` (use that absolute path in the PM briefing), and `role_skills` (absolute path per role contract — substitute these into the briefing too). Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first. The script also logs `[TEAM] caller=... pm=... sa=... dev=... tester=... test_worker=...` to stderr so a failed/unexpected provider choice is diagnosable without secrets ever appearing in the log. `test_worker`'s resolved kind/model/profile is logged and persisted the same way even though no pane is started for it here — Tester (the Tester Lead) spawns Test Workers later, on demand (§ Testing architecture).
 
 Configuration (env vars, all optional):
 
@@ -572,13 +702,15 @@ Configuration (env vars, all optional):
 | `FEATURE_TEAM_CALLER_KIND` | declare the calling agent's own kind explicitly (see Provider inheritance); only needed when automatic detection doesn't cover your agent |
 | `TEAM_KIND` | agent kind for every role (default: the calling agent's own kind — **never** a hardcoded default); any kind `herdr agent` lists |
 | `PM_KIND` `SA_KIND` `DEV_KIND` `TESTER_KIND` `REVIEWER_KIND` | per-role kind override |
+| `TEST_WORKER_KIND` | kind override for Test Workers the Tester Lead spawns later (default: `TEAM_KIND`/caller — resolved here at kickoff and persisted so a later worker spawn reuses it; see § Testing architecture) |
 | `TEAM_CONNECTION` | named connection (see user config's `connections:`) for every role without a more specific override — resolves to a kind + provider |
-| `PM_CONNECTION` `SA_CONNECTION` `DEV_CONNECTION` `TESTER_CONNECTION` `REVIEWER_CONNECTION` | per-role connection override |
+| `PM_CONNECTION` `SA_CONNECTION` `DEV_CONNECTION` `TESTER_CONNECTION` `TEST_WORKER_CONNECTION` `REVIEWER_CONNECTION` | per-role connection override |
 | `TEAM_ARGS` | args passed verbatim to every agent CLI after `--` |
 | `PM_ARGS` `SA_ARGS` `DEV_ARGS` `TESTER_ARGS` `REVIEWER_ARGS` | per-role args override |
-| `PM_MODEL` `SA_MODEL` `DEV_MODEL` `TESTER_MODEL` `REVIEWER_MODEL` | explicit model id per role — wins over everything below (see § Model selection) |
-| `PM_MODEL_PROFILE` `SA_MODEL_PROFILE` `DEV_MODEL_PROFILE` `TESTER_MODEL_PROFILE` `REVIEWER_MODEL_PROFILE` | semantic profile (`top`/`strong`/`balanced`/`fast`) per role |
-| `TEAM_MODEL_PROFILE` | semantic profile for every role without its own override (default when unset, before repo/user config: PM=`strong`, SA=`top`, DEV/TESTER=`balanced`, REVIEWER=`strong`) |
+| `PM_MODEL` `SA_MODEL` `DEV_MODEL` `TESTER_MODEL` `TEST_WORKER_MODEL` `REVIEWER_MODEL` | explicit model id per role — wins over everything below (see § Model selection) |
+| `PM_MODEL_PROFILE` `SA_MODEL_PROFILE` `DEV_MODEL_PROFILE` `TESTER_MODEL_PROFILE` `TEST_WORKER_MODEL_PROFILE` `REVIEWER_MODEL_PROFILE` | semantic profile (`top`/`strong`/`balanced`/`fast`) per role |
+| `TEAM_MODEL_PROFILE` | semantic profile for every role without its own override (default when unset, before repo/user config: PM=`strong`, SA=`top`, DEV/TESTER=`balanced`, TEST_WORKER=`fast`, REVIEWER=`strong`) |
+| `TESTING_*` (`TESTING_MAX_WORKERS`, `TESTING_RETRY_MAX_ATTEMPTS`, `TESTING_TIMEOUT_*_MS`, …) | override any `testing.*` repo-config value for this invocation — see § Testing configuration for the full list and defaults |
 | `<KIND>_<PROFILE>_MODEL` / `<VENDOR>_<PROFILE>_MODEL` | provider-scoped model config, e.g. `CLAUDE_STRONG_MODEL`, `OPENAI_BALANCED_MODEL`, `DEEPSEEK_FAST_MODEL` — see `model-registry.sh` (or a `providers.<vendor>.models.<profile>` entry in either config scope) |
 | `FEATURE_TEAM_USER_CONFIG` | path to the user config file (default `~/.config/feature-team/config.yaml`) — mainly for tests/alternate profiles |
 | `FEATURE_COMPLEXITY` | `simple`/`normal`/`complex`/`high-risk` (default: repo config's `complexity:`, else `normal`) — see § Task-complexity policy |
@@ -647,11 +779,20 @@ read its own contract in full before starting, by absolute path:
   Tester: <role_skills.tester>  Reviewer (if enabled): <role_skills.reviewer>
   shared: <role_skills.handoff> (all), <role_skills.git> (dev),
           <role_skills.security> (all)
+Tester is the Tester Lead: it plans and may spawn its own parallel Test
+Workers, so its first prompt from you must ALSO include skill_dir=<skill_dir>
+and role_skills.test-worker=<role_skills.test-worker> (it points those at
+spawn-test-worker.sh and hands that path to each worker it spawns — see
+feature-team/SKILL.md § Testing architecture); you do not spawn or prompt
+Test Workers yourself, and you never see them directly — only Tester's
+aggregated report.
 `bash <skill_dir>/role-skill.sh <role>` re-derives any of these paths if you
 lose them (e.g. after a respawn). If a path is missing or unset, say so in
 your first checkpoint and fall back to this summary, one line per role:
   SA architecture and design, no production code · Dev implements one
-  assigned workstream · Tester independently verifies (never trusts Dev's
+  assigned workstream · Tester (the Tester Lead) plans verification, decides
+  whether to spawn narrow-scoped parallel Test Workers, aggregates their
+  results, and owns the final PASS/FAIL/BLOCKED verdict (never trusts Dev's
   report, never edits production source to go green) · PM owns the lifecycle.
   · If a Reviewer role is enabled for this feature, Reviewer independently
   reviews the diff after Tester's PASS (architecture fidelity, security,
@@ -697,17 +838,21 @@ given — see § Feature-level model persistence). This is now THIS feature's
 own immutable configuration, independent of whatever the repo/user config
 says later:
   bash <skill_dir>/checkpoint.sh docs/features/<slug>.md SYSTEM STARTED \
-    --summary "Team started: pm=<pm kind>/<pm provider>/<pm profile>, sa=<sa kind>/<sa provider>/<sa profile>, dev=<dev kind>/<dev provider>/<dev profile>, tester=<tester kind>/<tester provider>/<tester profile>." \
+    --summary "Team started: pm=<pm kind>/<pm provider>/<pm profile>, sa=<sa kind>/<sa provider>/<sa profile>, dev=<dev kind>/<dev provider>/<dev profile>, tester=<tester kind>/<tester provider>/<tester profile>, test_worker=<test_worker kind>/<test_worker provider>/<test_worker profile>." \
     --evidence "complexity=<complexity>" --evidence "reviewer_enabled=<true/false>" \
     --result "Team is running." --next "Begin planning." \
     --set complexity=<complexity> --set reviewer_enabled=<true/false> \
     --set pm_kind=<pm kind> --set pm_connection=<pm connection or blank> --set pm_provider=<pm provider> --set pm_profile=<pm profile> --set pm_model=<pm model or blank> \
     --set sa_kind=<sa kind> --set sa_connection=<sa connection or blank> --set sa_provider=<sa provider> --set sa_profile=<sa profile> --set sa_model=<sa model or blank> \
     --set dev_kind=<dev kind> --set dev_connection=<dev connection or blank> --set dev_provider=<dev provider> --set dev_profile=<dev profile> --set dev_model=<dev model or blank> \
-    --set tester_kind=<tester kind> --set tester_connection=<tester connection or blank> --set tester_provider=<tester provider> --set tester_profile=<tester profile> --set tester_model=<tester model or blank>
+    --set tester_kind=<tester kind> --set tester_connection=<tester connection or blank> --set tester_provider=<tester provider> --set tester_profile=<tester profile> --set tester_model=<tester model or blank> \
+    --set test_worker_kind=<test_worker kind> --set test_worker_connection=<test_worker connection or blank> --set test_worker_provider=<test_worker provider> --set test_worker_profile=<test_worker profile> --set test_worker_model=<test_worker model or blank>
 If reviewer_enabled is true, also `--set reviewer_kind=... --set
 reviewer_connection=... --set reviewer_provider=... --set
-reviewer_profile=... --set reviewer_model=...` in the same call.
+reviewer_profile=... --set reviewer_model=...` in the same call. Note that
+`test_worker` here is the resolved configuration Test Workers will use when
+Tester spawns them later — no pane is started for it now (§ Testing
+architecture).
 If you later escalate a role's model (e.g. Dev balanced → strong after a
 Tester-caught defect), update that role's `*_profile`/`*_model` fields the
 same way via a `SYSTEM MODEL_ESCALATED` checkpoint (see § Model escalation
@@ -958,5 +1103,6 @@ notification fired. Never ask the user to watch panes.
 - User names a kind ("use codex for the devs") → set `DEV_KIND`/`DEV_ARGS` (or `TEAM_KIND`/`TEAM_ARGS`) at spawn time; the rest of the flow is unchanged.
 - User wants to see or change this repo's model setup → `bash "$SKILL_DIR/config.sh" show` / `save` (§ Configuration display, § Explicit "remember" behavior); don't hand-edit `.feature-team/config.yaml`'s resolved fields when the CLI can regenerate them from the actual effective configuration.
 - User wants a Reviewer pass ("add a reviewer", "have someone review this before PR") → set `REVIEWER_ENABLED=1` (or `reviewer.enabled: true` in repo config) before spawning; see § Optional Reviewer role. Don't add one unasked — it's off by default for a reason.
+- User wants testing to run purely sequentially, no parallel workers ("don't spawn test workers", "keep testing simple") → set `TESTING_PARALLEL_ENABLED=0` (or `testing.parallel.enabled: false` in repo config); the Tester Lead then verifies everything itself (feature-tester § Verifying directly), same result, no parallelism.
 - Trivial feature (one file, obvious change) → say the team is overkill and do it directly unless the user insists.
 - User asks to shut the team down → check `docs/features/<slug>.md` for any workstream worktrees still open and offer `remove-workstream.sh` for each, then `herdr workspace close <id>` (confirm first if uncommitted work exists).

@@ -18,13 +18,13 @@ pass=0 fail=0
 # Isolate env: strip every signal detect_caller_kind might pick up from the
 # real environment this test happens to run in, so each case starts blank.
 clean_env() {
-  unset FEATURE_TEAM_CALLER_KIND TEAM_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND REVIEWER_KIND \
+  unset FEATURE_TEAM_CALLER_KIND TEAM_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND TEST_WORKER_KIND REVIEWER_KIND \
         CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED \
         CURSOR_TRACE_ID AI_AGENT \
-        PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL REVIEWER_MODEL AGENT_MODEL AGENT_KIND \
-        PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE REVIEWER_MODEL_PROFILE \
+        PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL TEST_WORKER_MODEL REVIEWER_MODEL AGENT_MODEL AGENT_KIND \
+        PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE TEST_WORKER_MODEL_PROFILE REVIEWER_MODEL_PROFILE \
         TEAM_MODEL_PROFILE AGENT_MODEL_PROFILE \
-        TEAM_CONNECTION PM_CONNECTION SA_CONNECTION DEV_CONNECTION TESTER_CONNECTION REVIEWER_CONNECTION \
+        TEAM_CONNECTION PM_CONNECTION SA_CONNECTION DEV_CONNECTION TESTER_CONNECTION TEST_WORKER_CONNECTION REVIEWER_CONNECTION \
         FEATURE_COMPLEXITY REVIEWER_ENABLED FEATURE_TEAM_USER_CONFIG \
         CLAUDE_TOP_MODEL CLAUDE_STRONG_MODEL CLAUDE_BALANCED_MODEL CLAUDE_FAST_MODEL \
         CODEX_TOP_MODEL CODEX_STRONG_MODEL CODEX_BALANCED_MODEL CODEX_FAST_MODEL \
@@ -192,12 +192,17 @@ check_profile "Default profile — SA"       ': # nothing set' SA       "top"
 check_profile "Default profile — DEV"      ': # nothing set' DEV      "balanced"
 check_profile "Default profile — TESTER"   ': # nothing set' TESTER   "balanced"
 check_profile "Default profile — REVIEWER" ': # nothing set' REVIEWER "strong"
+check_profile "Default profile — TEST_WORKER (fast, per § Model optimization)" ': # nothing set' TEST_WORKER "fast"
 
 # --- Case 6 (matrix): team profile applies where no role override exists ---
 check_profile "TEAM_MODEL_PROFILE=fast overrides DEV's built-in default" \
   'export TEAM_MODEL_PROFILE=fast' DEV "fast"
 check_profile "Role override still wins over TEAM_MODEL_PROFILE" \
   'export TEAM_MODEL_PROFILE=fast; export DEV_MODEL_PROFILE=strong' DEV "strong"
+check_profile "TEST_WORKER_MODEL_PROFILE explicit override wins over its own 'fast' default" \
+  'export TEST_WORKER_MODEL_PROFILE=balanced' TEST_WORKER "balanced"
+check_profile "Complexity high-risk — TEST_WORKER steps up to balanced (not strong)" \
+  'export FEATURE_COMPLEXITY=high-risk' TEST_WORKER "balanced"
 
 # --- Case 5 (matrix): DEV_MODEL_PROFILE=strong escalates Dev only ----------
 check_profile "DEV_MODEL_PROFILE=strong escalates only Dev" \

@@ -50,6 +50,7 @@ Two agents writing in one working tree corrupt each other's state — a half-wri
 - Sequential or read-only helpers may share a tree (`feature-team/spawn-agent.sh`).
 - **Any second concurrently-writing agent gets its own Git worktree** (`feature-team/spawn-workstream.sh`, which is resume-safe: it reopens an existing worktree for a branch instead of creating a duplicate).
 - Tear down only via `feature-team/remove-workstream.sh`, which refuses to remove a tree with uncommitted or unmerged commits unless forced. If it refuses, that refusal is information — investigate, do not add `--force` to get past it.
+- The same rule applies to the Tester Lead's parallel Test Workers, via `feature-team/spawn-test-worker.sh`: a read-only or single-scope verification worker shares the parent's tree; a worker that must write test files a concurrently-running worker might also touch gets its own worktree (`--worktree`). Test Workers should not be writing production source at all — see feature-tester and feature-test-worker.
 
 Only the agent that owns a worktree writes in it. If you find work in a tree you were not assigned, report it.
 

@@ -34,7 +34,7 @@ usage() {
 cmd="${1:-show}"
 
 active_roles() {
-  local roles="PM SA DEV TESTER"
+  local roles="PM SA DEV TESTER TEST_WORKER"
   reviewer_enabled && roles="$roles REVIEWER"
   echo "$roles"
 }
@@ -60,6 +60,20 @@ cmd_show() {
       "$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')" \
       "${RF_CONNECTION:--}" "${RF_PROVIDER:--}" "$RF_PROFILE" "${RF_MODEL:-<provider-default>}" "$RF_SOURCE"
   done
+  echo
+  echo "Testing (Tester Lead's parallel-verification policy — feature-team/SKILL.md § Testing configuration):"
+  printf '  parallel: enabled=%s max_workers=%s min_parallel_tasks=%s\n' \
+    "$(testing_parallel_enabled)" "$(testing_max_workers)" "$(testing_min_parallel_tasks)"
+  printf '  strategy: smoke_first=%s parallel_independent_checks=%s early_failure_feedback=%s\n' \
+    "$(testing_strategy_enabled smoke_first)" "$(testing_strategy_enabled parallel_independent_checks)" \
+    "$(testing_strategy_enabled early_failure_feedback)"
+  printf '            dependency_aware_cancellation=%s e2e_when_required=%s final_regression=%s\n' \
+    "$(testing_strategy_enabled dependency_aware_cancellation)" "$(testing_strategy_enabled e2e_when_required)" \
+    "$(testing_strategy_enabled final_regression)"
+  printf '  retry:    max_attempts=%s\n' "$(testing_retry_max_attempts)"
+  printf '  timeout:  smoke=%sms unit=%sms integration=%sms e2e=%sms worker=%sms\n' \
+    "$(testing_timeout_ms smoke)" "$(testing_timeout_ms unit)" "$(testing_timeout_ms integration)" \
+    "$(testing_timeout_ms e2e)" "$(testing_timeout_ms worker)"
 }
 
 # Emits the fixed-shape repo config document directly (never round-tripped
@@ -84,7 +98,7 @@ cmd_save() {
   body+=$'\n'"$reviewer_block"
 
   body+=$'\n'"roles:"$'\n'
-  for role in PM SA DEV TESTER; do
+  for role in PM SA DEV TESTER TEST_WORKER; do
     resolve_role_full "$role"
     body+="  $(printf '%s' "$role" | tr '[:upper:]' '[:lower:]'):"$'\n'
     [ -n "$RF_CONNECTION" ] && body+="    connection: $RF_CONNECTION"$'\n'
@@ -92,6 +106,27 @@ cmd_save() {
     body+="    profile: $RF_PROFILE"$'\n'
     [ -n "$RF_MODEL" ] && body+="    model: $RF_MODEL"$'\n'
   done
+
+  body+=$'\n'"testing:"$'\n'
+  body+="  parallel:"$'\n'
+  body+="    enabled: $(testing_parallel_enabled)"$'\n'
+  body+="    max_workers: $(testing_max_workers)"$'\n'
+  body+="    min_parallel_tasks: $(testing_min_parallel_tasks)"$'\n'
+  body+="  strategy:"$'\n'
+  body+="    smoke_first: $(testing_strategy_enabled smoke_first)"$'\n'
+  body+="    parallel_independent_checks: $(testing_strategy_enabled parallel_independent_checks)"$'\n'
+  body+="    early_failure_feedback: $(testing_strategy_enabled early_failure_feedback)"$'\n'
+  body+="    dependency_aware_cancellation: $(testing_strategy_enabled dependency_aware_cancellation)"$'\n'
+  body+="    e2e_when_required: $(testing_strategy_enabled e2e_when_required)"$'\n'
+  body+="    final_regression: $(testing_strategy_enabled final_regression)"$'\n'
+  body+="  retry:"$'\n'
+  body+="    max_attempts: $(testing_retry_max_attempts)"$'\n'
+  body+="  timeout:"$'\n'
+  body+="    smoke: $(testing_timeout_ms smoke)ms"$'\n'
+  body+="    unit: $(testing_timeout_ms unit)ms"$'\n'
+  body+="    integration: $(testing_timeout_ms integration)ms"$'\n'
+  body+="    e2e: $(testing_timeout_ms e2e)ms"$'\n'
+  body+="    worker: $(testing_timeout_ms worker)ms"$'\n'
 
   body+=$'\n'"model_policy:"$'\n'"  source: repository"$'\n'"  updated_at: \"$ts\""$'\n'
 

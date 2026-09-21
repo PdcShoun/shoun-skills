@@ -80,6 +80,21 @@ for role in $ROLES; do
   printf -v "R_${role}_SOURCE" '%s' "$RF_SOURCE"
 done
 
+# TEST_WORKER gets no pane of its own — Tester (the Tester Lead) spawns test
+# workers dynamically, on demand, via spawn-test-worker.sh (feature-team/
+# SKILL.md § Testing architecture) — but its resolved kind/model/profile is
+# still recorded here and persisted into the feature doc's ```state block at
+# kickoff, same as every other role, so a resumed feature and every worker
+# it spawns later reuse this feature's own configuration rather than
+# re-resolving against whatever the repo/user config says by then (§
+# Feature-level model persistence).
+resolve_role_full TEST_WORKER
+[ -n "$RF_KIND" ] || fail_no_provider "TEAM_KIND"
+R_TEST_WORKER_KIND="$RF_KIND"; R_TEST_WORKER_CONNECTION="$RF_CONNECTION"
+R_TEST_WORKER_PROVIDER="$RF_PROVIDER"; R_TEST_WORKER_PROFILE="$RF_PROFILE"
+R_TEST_WORKER_MODEL="$RF_MODEL"; R_TEST_WORKER_SOURCE="$RF_SOURCE"
+validate_kind "$R_TEST_WORKER_KIND"
+
 PM_KIND="$R_PM_KIND"; SA_KIND="$R_SA_KIND"; DEV_KIND="$R_DEV_KIND"; TESTER_KIND="$R_TESTER_KIND"
 PM_MODEL="$R_PM_MODEL"; SA_MODEL="$R_SA_MODEL"; DEV_MODEL="$R_DEV_MODEL"; TESTER_MODEL="$R_TESTER_MODEL"
 PM_PROFILE="$R_PM_PROFILE"; SA_PROFILE="$R_SA_PROFILE"; DEV_PROFILE="$R_DEV_PROFILE"; TESTER_PROFILE="$R_TESTER_PROFILE"
@@ -94,11 +109,11 @@ for role in $ROLES; do
 done
 
 # Provider/model selection is diagnosable, not just correct — log it (no secrets).
-team_log="[TEAM] caller=${CALLER_KIND:-unknown} pm=$PM_KIND sa=$SA_KIND dev=$DEV_KIND tester=$TESTER_KIND"
+team_log="[TEAM] caller=${CALLER_KIND:-unknown} pm=$PM_KIND sa=$SA_KIND dev=$DEV_KIND tester=$TESTER_KIND test_worker=$R_TEST_WORKER_KIND"
 [ "$WITH_REVIEWER" = 1 ] && team_log+=" reviewer=$REVIEWER_KIND"
 echo "$team_log" >&2
 echo "[TEAM] complexity=$COMPLEXITY reviewer_enabled=$WITH_REVIEWER" >&2
-for role in $ROLES; do
+for role in $ROLES TEST_WORKER; do
   conn_var="R_${role}_CONNECTION"; prov_var="R_${role}_PROVIDER"
   prof_var="R_${role}_PROFILE"; model_var="R_${role}_MODEL"; src_var="R_${role}_SOURCE"
   echo "[MODELS] $role conn=${!conn_var:-<none>} provider=${!prov_var:-<unknown>} profile=${!prof_var} model=${!model_var:-<provider-default>} source=${!src_var}" >&2
@@ -120,6 +135,14 @@ export PM_MODEL_PROFILE="$PM_PROFILE" SA_MODEL_PROFILE="$SA_PROFILE" \
 if [ "$WITH_REVIEWER" = 1 ]; then
   export REVIEWER_KIND REVIEWER_MODEL REVIEWER_MODEL_PROFILE="$REVIEWER_PROFILE"
 fi
+# TEST_WORKER gets no pane, but its resolved kind/model/profile is exported
+# into the team's panes the same way — so Tester (the Tester Lead), which
+# reads these back out when it calls spawn-test-worker.sh, spawns workers
+# against this feature's own resolved configuration rather than re-deriving
+# it against whatever the repo/user config says by the time it actually
+# spawns one.
+export TEST_WORKER_KIND="$R_TEST_WORKER_KIND" TEST_WORKER_MODEL="$R_TEST_WORKER_MODEL" \
+       TEST_WORKER_MODEL_PROFILE="$R_TEST_WORKER_PROFILE"
 
 # Agents of kind claude drive their teammates through the herdr skill — make
 # sure it exists where they load skills (project .claude/skills or
@@ -172,7 +195,7 @@ done
 
 role_field_json() {   # <field: KIND|CONNECTION|PROVIDER|PROFILE|MODEL|SOURCE>
   local field="$1" role val var out=()
-  for role in PM SA DEV TESTER REVIEWER; do
+  for role in PM SA DEV TESTER TEST_WORKER REVIEWER; do
     [ "$role" = REVIEWER ] && [ "$WITH_REVIEWER" != 1 ] && continue
     var="R_${role}_${field}"; val="${!var:-}"
     out+=("$(printf '%s' "$role" | tr '[:upper:]' '[:lower:]')" "$val")

@@ -37,7 +37,7 @@ validate_kind() {
 # actually set — no per-agent-kind knowledge — minus per-session vars that
 # point back at the launching agent.
 TEAM_ENV_PREFIXES="${TEAM_ENV_PREFIXES:-TEAM_ CLAUDE_ ANTHROPIC_ OPENAI_ AZURE_OPENAI_ GOOGLE_ GEMINI_ VERTEX_ XAI_ GROK_ MISTRAL_ DEEPSEEK_ OPENROUTER_ OLLAMA_ CODEX_ CURSOR_ COPILOT_ QWEN_ KIMI_ AMP_ OPENCODE_ PI_}"
-TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR FEATURE_TEAM_CALLER_KIND FEATURE_TEAM_USER_CONFIG PM_KIND SA_KIND DEV_KIND TESTER_KIND REVIEWER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS REVIEWER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL REVIEWER_MODEL PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE REVIEWER_MODEL_PROFILE AGENT_MODEL_PROFILE PM_CONNECTION SA_CONNECTION DEV_CONNECTION TESTER_CONNECTION REVIEWER_CONNECTION TEAM_CONNECTION REVIEWER_ENABLED FEATURE_COMPLEXITY CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR TEAM_MAX_RETRIES TEAM_MAX_PARALLEL TEAM_STAGE_TIMEOUT_MS}"
+TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR FEATURE_TEAM_CALLER_KIND FEATURE_TEAM_USER_CONFIG PM_KIND SA_KIND DEV_KIND TESTER_KIND TEST_WORKER_KIND REVIEWER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS REVIEWER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL TEST_WORKER_MODEL REVIEWER_MODEL PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE TEST_WORKER_MODEL_PROFILE REVIEWER_MODEL_PROFILE AGENT_MODEL_PROFILE PM_CONNECTION SA_CONNECTION DEV_CONNECTION TESTER_CONNECTION TEST_WORKER_CONNECTION REVIEWER_CONNECTION TEAM_CONNECTION REVIEWER_ENABLED FEATURE_COMPLEXITY CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR TEAM_MAX_RETRIES TEAM_MAX_PARALLEL TEAM_STAGE_TIMEOUT_MS TESTING_PARALLEL_ENABLED TESTING_MAX_WORKERS TESTING_MIN_PARALLEL_TASKS TESTING_RETRY_MAX_ATTEMPTS TESTING_TIMEOUT_SMOKE_MS TESTING_TIMEOUT_UNIT_MS TESTING_TIMEOUT_INTEGRATION_MS TESTING_TIMEOUT_E2E_MS TESTING_TIMEOUT_WORKER_MS TESTING_SMOKE_FIRST TESTING_PARALLEL_INDEPENDENT_CHECKS TESTING_EARLY_FAILURE_FEEDBACK TESTING_DEPENDENCY_AWARE_CANCELLATION TESTING_E2E_WHEN_REQUIRED TESTING_FINAL_REGRESSION}"
 TEAM_ENV_DENY="${TEAM_ENV_DENY:-CLAUDE_CODE_ HERDR_}"
 
 # Fills the TEAM_ENV array with --env K=V pairs for `herdr` calls.
@@ -104,8 +104,8 @@ resolve_agent_args() {   # <role-label> <kind> <configured-args> <model-hint>
 # ---- Model selection ----------------------------------------------------
 # Five independent concepts, never conflated (see feature-team/SKILL.md
 # § Strict separation of concepts):
-#   Role         PM / SA / DEV / TESTER / (optional) REVIEWER — a fixed
-#                contract; never changes with the model
+#   Role         PM / SA / DEV / TESTER / (dynamic) TEST_WORKER / (optional)
+#                REVIEWER — a fixed contract; never changes with the model
 #   Connection   a named account/CLI binding on THIS machine (e.g. com1,
 #                com2), defined only in user config — see config-lib.sh
 #   Provider     the agent kind's own vendor (claude, openai, deepseek, ...)
@@ -131,31 +131,45 @@ resolve_agent_args() {   # <role-label> <kind> <configured-args> <model-hint>
 # feature-team/SKILL.md § Recommended default model policy and
 # § Task-complexity policy for the full rationale and the table this
 # encodes).
-role_default_profile() {   # <ROLE: PM|SA|DEV|TESTER|REVIEWER> [complexity]
+#
+# TEST_WORKER is not one of the fixed team roles spawn-team.sh starts a pane
+# for — Tester (the Tester Lead) spawns test workers dynamically, on demand,
+# via spawn-test-worker.sh (feature-team/SKILL.md § Testing architecture).
+# It still resolves through this exact same role/connection/profile/model
+# chain, under its own role name, so "never a hardcoded model, never a
+# silent provider switch" applies to workers too. It defaults to "fast"
+# (narrow, single-purpose verification scope — see § Model optimization)
+# except at high-risk, where it steps up to "balanced" like a first-line
+# defense against a costlier miss; escalate further per-feature the same way
+# any other role escalates (§ Model escalation), never as a blanket policy
+# change here.
+role_default_profile() {   # <ROLE: PM|SA|DEV|TESTER|TEST_WORKER|REVIEWER> [complexity]
   local role="$1" complexity="${2:-normal}"
   case "$complexity" in
     simple)
       case "$role" in
         PM) echo strong ;; SA) echo strong ;;
-        DEV|TESTER) echo fast ;; REVIEWER) echo strong ;;
+        DEV|TESTER|TEST_WORKER) echo fast ;; REVIEWER) echo strong ;;
         *) echo balanced ;;
       esac ;;
     complex)
       case "$role" in
         PM) echo strong ;; SA) echo top ;;
-        DEV) echo balanced ;; TESTER) echo strong ;; REVIEWER) echo strong ;;
+        DEV) echo balanced ;; TESTER) echo strong ;; TEST_WORKER) echo fast ;;
+        REVIEWER) echo strong ;;
         *) echo balanced ;;
       esac ;;
     high-risk)
       case "$role" in
         PM) echo strong ;; SA) echo top ;;
-        DEV) echo strong ;; TESTER) echo strong ;; REVIEWER) echo strong ;;
+        DEV) echo strong ;; TESTER) echo strong ;; TEST_WORKER) echo balanced ;;
+        REVIEWER) echo strong ;;
         *) echo strong ;;
       esac ;;
     normal|*)
       case "$role" in
         PM) echo strong ;; SA) echo top ;;
-        DEV|TESTER) echo balanced ;; REVIEWER) echo strong ;;
+        DEV|TESTER) echo balanced ;; TEST_WORKER) echo fast ;; REVIEWER) echo strong ;;
         *) echo balanced ;;
       esac ;;
   esac
@@ -184,7 +198,7 @@ RESOLVED_PROFILE_SOURCE=""
 # call. External callers (tests, etc.) that only want the value are unaffected
 # and may keep using `$(...)`.
 RESOLVED_PROFILE=""
-resolve_model_profile() {   # <ROLE: PM|SA|DEV|TESTER|REVIEWER>
+resolve_model_profile() {   # <ROLE: PM|SA|DEV|TESTER|TEST_WORKER|REVIEWER>
   local role="$1" role_var role_lc val
   role_var="${role}_MODEL_PROFILE"
   if [ -n "${!role_var:-}" ]; then
@@ -341,7 +355,7 @@ fail_model_unavailable() {   # <role> <connection-name> <where-it-was-configured
 # Sets globals: RESOLVED_KIND RESOLVED_PROVIDER RESOLVED_CONNECTION
 # RESOLVED_KIND_SOURCE (cli/repo/user/caller).
 RESOLVED_KIND="" RESOLVED_PROVIDER="" RESOLVED_CONNECTION="" RESOLVED_KIND_SOURCE=""
-resolve_role_kind() {   # <ROLE: PM|SA|DEV|TESTER|REVIEWER>
+resolve_role_kind() {   # <ROLE: PM|SA|DEV|TESTER|TEST_WORKER|REVIEWER>
   local role="$1" role_kind_var="${1}_KIND" role_conn_var="${1}_CONNECTION"
   local role_lc kind="" conn="" source=""
 
@@ -399,7 +413,7 @@ rf_combined_source() {   # <kind-source> <profile-source>
 # spawn-team.sh (to actually start the agent) and config.sh (to report the
 # effective configuration without starting anything).
 # Sets: RF_KIND RF_CONNECTION RF_PROVIDER RF_PROFILE RF_MODEL RF_SOURCE
-resolve_role_full() {   # <ROLE: PM|SA|DEV|TESTER|REVIEWER>
+resolve_role_full() {   # <ROLE: PM|SA|DEV|TESTER|TEST_WORKER|REVIEWER>
   local role="$1" explicit_model_var="${1}_MODEL"
   local kind_source profile_source model_source
   # Called directly (never via `$(...)`) so the RESOLVED_*_SOURCE globals
@@ -489,7 +503,7 @@ role_skill_path() {   # <skill-name>
   return 1
 }
 
-ROLE_SKILLS="pm sa dev tester reviewer handoff git security"
+ROLE_SKILLS="pm sa dev tester test-worker reviewer handoff git security"
 
 # Emit the resolved paths as a JSON object; warn once per missing skill.
 role_skills_json() {

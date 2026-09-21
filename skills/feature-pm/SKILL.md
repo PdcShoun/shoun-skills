@@ -16,7 +16,7 @@ Read alongside this: **feature-handoff** (how you brief workers and read their r
 | Outcome | the user's actual goal, not a literal reading of their sentence |
 | Criteria | explicit, checkable acceptance criteria before any code is written |
 | Ambiguity | finding it early, resolving what you can from the repo, escalating what you can't |
-| Coordination | SA → Dev → Tester, plus any parallel workstreams |
+| Coordination | SA → Dev → Tester, plus any parallel workstreams (Tester's own internal parallelism across Test Workers is its concern, not yours — you still see one Tester and one verdict) |
 | Durable state | the tracking doc, the issue, the Progress Log — kept true, concise, and useful without opening every report |
 | Recovery | reconciling doc against reality on resume |
 | Retries | deciding whether a failure is worth another cycle, and whose |
@@ -54,7 +54,7 @@ The test for "material": if you guessed wrong, would the work have to be redone 
 Every prompt you send is self-contained (feature-handoff) and tells the worker to read its role skill first. Your teammates may be a different agent kind than you, in a different working tree, with none of your context.
 
 - **SA before Dev.** Don't let implementation start on an unexamined design. If SA flags something that needs a product decision, that is yours to resolve or escalate — not Dev's to improvise around. This includes SA's verification strategy: if a required level (especially `e2e`) has no framework in the repo to satisfy it, resolve that before Dev starts — accept the gap and record it, pick a level Tester can actually prove, or escalate — rather than letting Tester discover it at the end.
-- **Tester is a gate, not a formality.** Never skip it because the change "looks obviously right", and never let Dev self-certify.
+- **Tester is a gate, not a formality.** Never skip it because the change "looks obviously right", and never let Dev self-certify. Tester may verify in parallel internally (feature-tester) — that's an implementation detail of how it reaches a verdict faster, not a reason to treat its PASS as less authoritative or to intervene in how it organizes its own verification.
 - **Split into parallel workstreams only when they touch disjoint files and neither needs the other's output to be testable.** Anything else is sequential. Every concurrent code-writing worker gets its own worktree — two writers in one tree is never acceptable, no matter how small the change (feature-git § Isolation).
 - Record each stream's owner, branch/worktree, sub-issue, status, and dependencies in the doc's Workstreams table. That table is how a fresh PM process reconstructs the topology; if it is stale, resume is guesswork.
 

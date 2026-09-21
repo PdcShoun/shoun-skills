@@ -1,6 +1,6 @@
 ---
 name: feature-security
-description: "Internal shared contract for the feature-team skill — the safety rules every role (PM, SA, Dev, Tester) obeys around secrets, credentials, production systems, and workspace boundaries. Not a standalone workflow and not a security review of the user's code; it governs how the agents themselves behave during a feature run."
+description: "Internal shared contract for the feature-team skill — the safety rules every role (PM, SA, Dev, Tester/Tester Lead, Test Worker) obeys around secrets, credentials, production systems, and workspace boundaries. Not a standalone workflow and not a security review of the user's code; it governs how the agents themselves behave during a feature run."
 ---
 
 # Feature security contract

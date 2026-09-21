@@ -170,3 +170,89 @@ reviewer_enabled() {
     *) return 1 ;;
   esac
 }
+
+# ---- Testing configuration -------------------------------------------------
+# The `testing:` config tree (feature-team/SKILL.md § Testing configuration)
+# governs the Tester Lead's parallel-verification behavior: whether/how many
+# test workers it may spawn, which strategy toggles apply, worker retry
+# limits, and per-stage timeouts. Same layering as everything else in this
+# file: an explicit env var wins over repo config, which wins over the
+# built-in default below — never inferred from the feature/request, and
+# never silently different between two runs of the same repo.
+#
+# testing_cfg_bool/testing_cfg_num are the two generic readers every
+# testing_* getter below is built from; nothing outside this file should
+# need to touch `testing.*` repo-config paths directly.
+
+_testing_bool_norm() {   # <raw value>
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) echo true ;;
+    *) echo false ;;
+  esac
+}
+
+testing_cfg_bool() {   # <ENV_VAR_NAME> <repo.config.path> <default true|false>
+  local env_name="$1" repo_path="$2" default="$3" v
+  v="${!env_name:-}"
+  [ -n "$v" ] || v=$(cfg_get_repo "$repo_path")
+  [ -n "$v" ] || { echo "$default"; return 0; }
+  _testing_bool_norm "$v"
+}
+
+testing_cfg_num() {   # <ENV_VAR_NAME> <repo.config.path> <default>
+  local env_name="$1" repo_path="$2" default="$3" v
+  v="${!env_name:-}"
+  [ -n "$v" ] || v=$(cfg_get_repo "$repo_path")
+  echo "${v:-$default}"
+}
+
+# "2m" / "90s" / a bare millisecond integer -> milliseconds, so callers can
+# hand herdr's own --timeout (which wants milliseconds) a value straight
+# from either an env var or repo config without doing arithmetic themselves.
+testing_to_ms() {   # <value: <N>ms|<N>s|<N>m|<N>>
+  local v="$1"
+  case "$v" in
+    *ms) echo "${v%ms}" ;;
+    *m)  echo $(( ${v%m} * 60000 )) ;;
+    *s)  echo $(( ${v%s} * 1000 )) ;;
+    *)   echo "$v" ;;
+  esac
+}
+
+testing_parallel_enabled() { testing_cfg_bool TESTING_PARALLEL_ENABLED testing.parallel.enabled true; }
+testing_max_workers()       { testing_cfg_num  TESTING_MAX_WORKERS testing.parallel.max_workers 3; }
+testing_min_parallel_tasks() { testing_cfg_num TESTING_MIN_PARALLEL_TASKS testing.parallel.min_parallel_tasks 2; }
+testing_retry_max_attempts() { testing_cfg_num TESTING_RETRY_MAX_ATTEMPTS testing.retry.max_attempts 2; }
+
+# Strategy toggles (feature-team/SKILL.md § Scaling rules, § Smoke-first
+# strategy, § Early failure feedback, § Dependency-aware cancellation) — all
+# default true; a repo can turn any one off explicitly, never a silent skip.
+testing_strategy_enabled() {   # <smoke_first|parallel_independent_checks|early_failure_feedback|dependency_aware_cancellation|e2e_when_required|final_regression>
+  local name="$1" env_name
+  env_name="TESTING_$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+  testing_cfg_bool "$env_name" "testing.strategy.$name" true
+}
+
+# Per-stage timeout in ms, given to `herdr agent prompt <worker> ... --timeout`.
+# smoke/unit/integration/e2e have their own repo-config default; any stage
+# without one (including a worker type outside this named set) falls back to
+# testing.timeout.worker, then a hardcoded 20 minutes — see
+# feature-team/SKILL.md § Worker timeout. Never left unset: every worker gets
+# SOME timeout, so nothing can hang indefinitely.
+testing_timeout_ms() {   # <stage: smoke|unit|integration|e2e|worker|...>
+  local stage="$1" env_name v
+  env_name="TESTING_TIMEOUT_$(printf '%s' "$stage" | tr '[:lower:]' '[:upper:]')_MS"
+  v="${!env_name:-}"
+  [ -n "$v" ] || v=$(cfg_get_repo "testing.timeout.$stage")
+  if [ -z "$v" ]; then
+    case "$stage" in
+      smoke) v=2m ;; unit) v=5m ;; integration) v=10m ;; e2e) v=15m ;;
+    esac
+  fi
+  if [ -z "$v" ]; then
+    v="${TESTING_TIMEOUT_WORKER_MS:-}"
+    [ -n "$v" ] || v=$(cfg_get_repo "testing.timeout.worker")
+    [ -n "$v" ] || v=20m
+  fi
+  testing_to_ms "$v"
+}
