@@ -28,8 +28,8 @@ validate_kind() {
 # same account and settings as the caller. Discovery is by prefix over what is
 # actually set — no per-agent-kind knowledge — minus per-session vars that
 # point back at the launching agent.
-TEAM_ENV_PREFIXES="${TEAM_ENV_PREFIXES:-TEAM_ ANTHROPIC_ OPENAI_ AZURE_OPENAI_ GOOGLE_ GEMINI_ VERTEX_ XAI_ GROK_ MISTRAL_ DEEPSEEK_ OPENROUTER_ OLLAMA_ CODEX_ CURSOR_ COPILOT_ QWEN_ KIMI_ AMP_ OPENCODE_}"
-TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR PM_KIND SA_KIND DEV_KIND TESTER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR TEAM_MAX_RETRIES TEAM_MAX_PARALLEL TEAM_STAGE_TIMEOUT_MS}"
+TEAM_ENV_PREFIXES="${TEAM_ENV_PREFIXES:-TEAM_ ANTHROPIC_ OPENAI_ AZURE_OPENAI_ GOOGLE_ GEMINI_ VERTEX_ XAI_ GROK_ MISTRAL_ DEEPSEEK_ OPENROUTER_ OLLAMA_ CODEX_ CURSOR_ COPILOT_ QWEN_ KIMI_ AMP_ OPENCODE_ PI_}"
+TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR FEATURE_TEAM_CALLER_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR TEAM_MAX_RETRIES TEAM_MAX_PARALLEL TEAM_STAGE_TIMEOUT_MS}"
 TEAM_ENV_DENY="${TEAM_ENV_DENY:-CLAUDE_CODE_ HERDR_}"
 
 # Fills the TEAM_ENV array with --env K=V pairs for `herdr` calls.
@@ -55,7 +55,9 @@ build_team_env() {
 }
 
 # Args a role's agent CLI is started with. Explicit <ROLE>_ARGS wins; the only
-# built-in default is claude's, the kind this skill was first written against.
+# built-in default is claude's, the kind this skill was first written against
+# — a provider adapter, not a generic fallback (see § Caller-kind detection
+# below for why "claude" must never be an implicit default for OTHER kinds).
 # Fills the AGENT_ARGV array.
 AGENT_ARGV=()
 resolve_agent_args() {   # <role-label> <kind> <configured-args> <model-hint>
@@ -66,10 +68,78 @@ resolve_agent_args() {   # <role-label> <kind> <configured-args> <model-hint>
     return 0
   fi
   case "$kind" in
-    claude) AGENT_ARGV=(--model "$model" --permission-mode auto) ;;
+    # claude's own default flags — model hint defaults to sonnet ONLY here,
+    # never bled into another kind's model resolution.
+    claude) AGENT_ARGV=(--model "${model:-sonnet}" --permission-mode auto) ;;
     *) echo "note: no ${role}_ARGS set for kind '$kind' — starting it bare;" \
             "set ${role}_ARGS for model/auto-approve flags" >&2 ;;
   esac
+}
+
+# ---- Caller-kind detection ----------------------------------------------
+# The team's default provider is whichever agent/CLI invoked feature-team —
+# never a hardcoded kind. Resolution order, cheapest/most-authoritative first:
+#   1. $FEATURE_TEAM_CALLER_KIND — set this if the calling agent (or its
+#      harness) already knows its own kind, which it always does. This is the
+#      ONLY mechanism guaranteed to work for a provider this script has no
+#      built-in signal for (e.g. a brand new kind herdr just added support
+#      for). Any agent can `export FEATURE_TEAM_CALLER_KIND=<its own kind>`
+#      before invoking spawn-team.sh/spawn-agent.sh/spawn-workstream.sh.
+#   2. Well-known runtime signals for providers we can detect without being
+#      told anything — best-effort, extend the case below as new signals are
+#      confirmed. Never assume "if nothing else matched, it must be claude".
+#   3. Undetected: return 1 (empty stdout). Every caller of this function
+#      MUST fail_no_provider rather than substitute a default kind — see
+#      resolve_team_kind and the three spawn-*.sh scripts.
+detect_caller_kind() {
+  if [ -n "${FEATURE_TEAM_CALLER_KIND:-}" ]; then
+    echo "$FEATURE_TEAM_CALLER_KIND"; return 0
+  fi
+  # Claude Code CLI sets these on its own process (verified: CLAUDECODE=1 is
+  # present for every `claude` invocation, including subshells it runs).
+  if [ -n "${CLAUDECODE:-}" ] || [ -n "${CLAUDE_CODE_ENTRYPOINT:-}" ]; then
+    echo claude; return 0
+  fi
+  # Codex CLI's sandbox markers.
+  if [ -n "${CODEX_SANDBOX:-}" ] || [ -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]; then
+    echo codex; return 0
+  fi
+  # Cursor's agent/background-agent env.
+  if [ -n "${CURSOR_TRACE_ID:-}" ]; then
+    echo cursor; return 0
+  fi
+  # Generic "which AI CLI is driving this shell" convention some terminal
+  # integrations set (observed: Warp sets AI_AGENT to a slug like
+  # "claude-code_2-1-267_agent"). Parse the leading provider slug rather than
+  # trusting the value verbatim, since the exact suffix format isn't ours to
+  # rely on.
+  if [ -n "${AI_AGENT:-}" ]; then
+    case "$AI_AGENT" in
+      claude*) echo claude; return 0 ;;
+      codex*) echo codex; return 0 ;;
+      gemini*) echo gemini; return 0 ;;
+      cursor*) echo cursor; return 0 ;;
+      pi|pi-*|pi_*) echo pi; return 0 ;;
+    esac
+  fi
+  return 1
+}
+
+# Effective kind for the whole team: explicit $TEAM_KIND wins, else whatever
+# detect_caller_kind resolves. Prints nothing and returns 1 if neither
+# resolves — the caller must fail_no_provider, never pick a default itself.
+resolve_team_kind() {
+  if [ -n "${TEAM_KIND:-}" ]; then echo "$TEAM_KIND"; return 0; fi
+  detect_caller_kind
+}
+
+# The one sanctioned way to give up when no provider can be determined. Never
+# call `validate_kind claude` (or any other kind) as a substitute for this.
+fail_no_provider() {   # <which-var-the-user-should-set> e.g. TEAM_KIND, AGENT_KIND
+  echo "Unable to determine calling agent provider." >&2
+  echo "Set ${1:-TEAM_KIND} explicitly, or export FEATURE_TEAM_CALLER_KIND=<kind>" \
+       "(pi, claude, codex, gemini, cursor, ...) before invoking this script." >&2
+  exit 1
 }
 
 # Start an agent, passing resolved args after `--` only when there are some.

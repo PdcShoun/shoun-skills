@@ -1,13 +1,15 @@
 ---
 name: feature-team
-description: "Fire-and-forget dev team (PM → SA → Dev → Tester) as Herdr agents of any supported kind (claude, codex, gemini, cursor, …). The PM owns the task end-to-end through an explicit state machine, checkpointing every transition to docs/features/<slug>.md and a mirrored tracking issue (GitHub, GitLab, or Gitea — whichever forge `origin` points at); the user walks away and gets one notification when the feature reaches done/blocked/failed. Use for new feature requests, e.g. '/feature-team add bulk export'. Requires running inside Herdr."
+description: "Fire-and-forget dev team (PM → SA → Dev → Tester) as Herdr agents of any supported kind (pi, claude, codex, gemini, cursor, …) — by default, every role runs as the SAME agent/provider that invoked this skill (no hardcoded default provider; see § Provider inheritance). The PM owns the task end-to-end through an explicit state machine, checkpointing every transition to docs/features/<slug>.md and a mirrored tracking issue (GitHub, GitLab, or Gitea — whichever forge `origin` points at); the user walks away and gets one notification when the feature reaches done/blocked/failed. Use for new feature requests, e.g. '/feature-team add bulk export'. Requires running inside Herdr."
 ---
 
 # Feature Team (Herdr) — fire-and-forget
 
 The user submits a request and walks away. **PM owns the task**: PM drives SA → Dev → Tester through an explicit state machine, checkpoints every transition to the tracking doc and issue, and fires exactly one terminal notification. You (this session) only: set up the team, hand the request to PM, tell the user where it's tracked, and relay one summary when PM finishes. Never ask the user to watch panes or approve prompts.
 
-The roles are agent-kind agnostic — the team can be all `claude`, all `codex`, or mixed. Kind and CLI flags are configuration (see Setup); nothing in this skill assumes a particular agent CLI beyond the defaults for `claude`.
+The roles are agent-kind agnostic — the team can be all `claude`, all `codex`, all `pi`, or mixed. Kind and CLI flags are configuration (see Setup); nothing in this skill assumes a particular agent CLI beyond the defaults for `claude` (claude's own adapter — see Provider inheritance).
+
+**By default, feature-team uses the same agent/provider that invoked it.** If you are Pi and you run `/feature-team`, PM/SA/Dev/Tester all default to `pi`. If you are Claude, they all default to `claude`. If you are Codex, they all default to `codex`. This is never a hardcoded default — see Provider inheritance below.
 
 Scratch files stay in the repo: never write to `/tmp` or other system temp dirs. Concise notes/findings/status go in the tracking doc's Progress Log or a forge comment — that's what the user actually watches. Detailed evidence a worker produces (full test output, a Tester or Dev report) is exactly what `.tmp/` at the repo root is for (create it if missing; it should not be committed — add it to `.gitignore` if not already ignored): write it there as `.tmp/<role>-report-<n>.md` (see feature-handoff) and have the doc's Progress Log reference the path instead of inlining the content.
 
@@ -25,6 +27,7 @@ Scratch files stay in the repo: never write to `/tmp` or other system temp dirs.
 | `notify.sh` | fire the terminal notification exactly once per feature (checks/sets `notified` in the doc) |
 | `vcs.sh` | forge-agnostic issue/PR operations — detects GitHub/GitLab/Gitea from `origin` and drives `gh`/`glab`/`tea` accordingly |
 | `role-skill.sh` | print the absolute path of a role contract (`pm`/`sa`/`dev`/`tester`/`handoff`/`git`/`security`), or `--json` for all |
+| `test-provider-inheritance.sh` | regression test for the provider-inheritance precedence/detection logic (see Provider inheritance below) — run it after touching `agent-env.sh`/`spawn-team.sh`'s kind resolution |
 | `templates/feature-doc.md` | the tracking-doc skeleton (state machine, acceptance criteria, DoD, resume state) |
 
 All of them accept `-h`/malformed-arg errors verbatim from `herdr`/`git` — no retry logic hides a real failure.
@@ -55,6 +58,45 @@ test "${HERDR_ENV:-}" = 1 || fallback
 
 If not inside Herdr, run PM → SA → Dev → Tester yourself — via your host's own subagent mechanism if it has one (e.g. Claude Code: Plan for SA, general-purpose for the rest), otherwise sequentially in this session — tracking in the same docs/issue format (copy `templates/feature-doc.md`), and report inline. The role contracts still apply: load the one for whichever role you are acting as (`bash "$SKILL_DIR/role-skill.sh" <role>`), and keep the boundaries — especially Tester's independence from Dev — even when every role is you. `spawn-workstream.sh`/`remove-workstream.sh` require Herdr's `worktree` command group; without it, parallel workstreams fall back to sequential work in one working tree.
 
+## Provider inheritance
+
+The calling agent/provider is the default execution provider for the entire team. The provider flows through every layer:
+
+```
+CALLER_AGENT → TEAM_KIND → PM_KIND / SA_KIND / DEV_KIND / TESTER_KIND
+```
+
+Effective precedence for each role, highest first:
+
+```
+role-specific override (PM_KIND/SA_KIND/DEV_KIND/TESTER_KIND)
+    > team-level override (TEAM_KIND)
+    > calling agent/provider (detected, or $FEATURE_TEAM_CALLER_KIND)
+    > fail — no provider is ever silently chosen
+```
+
+Examples (caller = pi):
+
+| config | result |
+| --- | --- |
+| none | PM=pi SA=pi DEV=pi TESTER=pi |
+| `DEV_KIND=claude` | PM=pi SA=pi **DEV=claude** TESTER=pi |
+| `TEAM_KIND=codex` | PM=codex SA=codex DEV=codex TESTER=codex |
+| `TEAM_KIND=codex TESTER_KIND=gemini` | PM=codex SA=codex DEV=codex **TESTER=gemini** |
+
+Explicit configuration always wins — setting some roles explicitly does not normalize the rest back to the caller's provider; unset roles still inherit the caller.
+
+### How the caller's kind is determined
+
+`detect_caller_kind` in `agent-env.sh`, in order:
+1. `$FEATURE_TEAM_CALLER_KIND` — set this yourself if you know your own kind and want to guarantee correct detection (recommended for any agent kind not covered by #2, e.g. Pi): `export FEATURE_TEAM_CALLER_KIND=pi`.
+2. Well-known runtime signals checked automatically: `CLAUDECODE`/`CLAUDE_CODE_ENTRYPOINT` → `claude`; `CODEX_SANDBOX*` → `codex`; `CURSOR_TRACE_ID` → `cursor`; a generic `AI_AGENT` slug some terminal integrations set (e.g. Warp) → parsed for a known provider prefix.
+3. If nothing matches: undetected. The spawn scripts then fail with `Unable to determine calling agent provider. Set TEAM_KIND explicitly, or export FEATURE_TEAM_CALLER_KIND=<kind>.` — **never a silent claude fallback.**
+
+Provider identity is a runtime concern, never inferred from the repo (no scanning for `.claude/`, no guessing from language/framework/installed binaries).
+
+Models follow the same rule: `PM_MODEL`/`SA_MODEL`/`DEV_MODEL`/`TESTER_MODEL` only apply to a role that resolved to kind `claude` (its own model-hint convention: `opus`/`sonnet`). A role resolved to any other kind gets no model default at all — the provider picks its own default, or you set one via that role's `*_ARGS`. A claude model name is never passed to a non-claude provider.
+
 ## Setup — one command
 
 Run the spawn script (next to this skill; `$SKILL_DIR` below is its directory). It captures this session's provider/config env, creates a `feature: <slug>` workspace, lays out four panes, starts the starters (`pm`/`sa`/`dev`/`tester`), and waits for them to boot:
@@ -63,17 +105,18 @@ Run the spawn script (next to this skill; `$SKILL_DIR` below is its directory). 
 bash "$SKILL_DIR/spawn-team.sh" <slug>
 ```
 
-The final JSON line gives `workspace`, each agent's `pane` id, each agent's `kind`, `default_branch` (detected from the repo, not assumed to be `main`), `skill_dir` (use that absolute path in the PM briefing), and `role_skills` (absolute path per role contract — substitute these into the briefing too). Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first.
+The final JSON line gives `workspace`, each agent's `pane` id, each agent's `kind`, `caller_kind` (what was detected/declared, or `null`), `default_branch` (detected from the repo, not assumed to be `main`), `skill_dir` (use that absolute path in the PM briefing), and `role_skills` (absolute path per role contract — substitute these into the briefing too). Agent-name collisions (a rerun while starters are alive) fail fast with herdr's error — rename or close the old workspace first. The script also logs `[TEAM] caller=... pm=... sa=... dev=... tester=...` to stderr so a failed/unexpected provider choice is diagnosable without secrets ever appearing in the log.
 
 Configuration (env vars, all optional):
 
 | var | effect |
 | --- | --- |
-| `TEAM_KIND` | agent kind for every role (default `claude`); any kind `herdr agent` lists |
+| `FEATURE_TEAM_CALLER_KIND` | declare the calling agent's own kind explicitly (see Provider inheritance); only needed when automatic detection doesn't cover your agent |
+| `TEAM_KIND` | agent kind for every role (default: the calling agent's own kind — **never** a hardcoded default); any kind `herdr agent` lists |
 | `PM_KIND` `SA_KIND` `DEV_KIND` `TESTER_KIND` | per-role kind override |
 | `TEAM_ARGS` | args passed verbatim to every agent CLI after `--` |
 | `PM_ARGS` `SA_ARGS` `DEV_ARGS` `TESTER_ARGS` | per-role args override |
-| `PM_MODEL` `SA_MODEL` (default `opus`), `DEV_MODEL` `TESTER_MODEL` (default `sonnet`) | model for kind `claude`'s default args only |
+| `PM_MODEL` `SA_MODEL` (default `opus`), `DEV_MODEL` `TESTER_MODEL` (default `sonnet`) | model for kind `claude`'s default args only — inert for any other kind |
 | `TEAM_ENV_PREFIXES` `TEAM_ENV_KEYS` `TEAM_ENV_DENY` | which env vars reach the team's panes (see `agent-env.sh`) |
 | `FEATURE_GIT_PROVIDER` | force the forge (`github`/`gitlab`/`gitea`) instead of auto-detecting it from `origin`'s hostname — needed for a self-hosted instance on a domain that doesn't contain "github"/"gitlab"/"gitea" (see `vcs.sh`) |
 | `TEAM_MAX_RETRIES` | default `3` — max Dev↔Tester fix/re-verify cycles per workstream before PM must mark `blocked`/`failed` |
@@ -86,7 +129,25 @@ With no `*_ARGS`, kind `claude` starts as `--model <role model> --permission-mod
 TEAM_KIND=codex TEAM_ARGS="--model gpt-5-codex --full-auto" bash "$SKILL_DIR/spawn-team.sh" bulk-export
 ```
 
+Mixed example — caller is Pi, SA runs on Claude and Dev on Codex, everything else inherits Pi:
+
+```bash
+SA_KIND=claude SA_ARGS="--model opus --permission-mode auto" \
+DEV_KIND=codex DEV_ARGS="--model gpt-5-codex --full-auto" \
+bash "$SKILL_DIR/spawn-team.sh" bulk-export
+# → PM=pi SA=claude DEV=codex TESTER=pi
+```
+
 If the user names a kind without its flags, ask for the flags once (or check that CLI's `--help`) rather than starting agents that stop on every approval.
+
+If the calling agent's kind cannot be detected and nothing was configured explicitly, the script fails immediately with no panes created:
+
+```
+Unable to determine calling agent provider.
+Set TEAM_KIND explicitly, or export FEATURE_TEAM_CALLER_KIND=<kind> (pi, claude, codex, gemini, cursor, ...) before invoking this script.
+```
+
+`spawn-agent.sh` and `spawn-workstream.sh` (used mid-run by PM for helpers/workstreams) follow the identical precedence (`AGENT_KIND` > `TEAM_KIND` > caller kind > fail) and are resume/retry-safe: a respawn after a crash, or a retry cycle, re-derives the same effective kind rather than picking a new one, unless you explicitly override it.
 
 ## Handoff — give PM the whole task
 

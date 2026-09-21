@@ -15,9 +15,13 @@
 # crash), it is left alone rather than double-started.
 #
 # Env (same meaning as spawn-agent.sh):
-#   AGENT_KIND   kind for this worker (default $TEAM_KIND, else claude)
+#   AGENT_KIND   kind for this worker (default $TEAM_KIND, else the calling
+#                agent's own kind — see detect_caller_kind in agent-env.sh;
+#                NEVER defaults to claude for a non-claude caller. Fails
+#                loudly if none of AGENT_KIND/TEAM_KIND/detection resolve.)
 #   AGENT_ARGS   default args when none passed positionally (falls back to $TEAM_ARGS)
-#   AGENT_MODEL  model hint for kind claude's default args (default sonnet)
+#   AGENT_MODEL  model hint for kind claude's default args only (default
+#                sonnet); ignored (and never defaulted) for any other kind
 # Provider/config env is forwarded from the caller's environment (see
 # TEAM_ENV_* in agent-env.sh) via `pane run` + `export`, because
 # `herdr worktree create/open` has no `--env` flag.
@@ -59,8 +63,9 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$base" ] || base=$(detect_default_branch)
 
-kind="${AGENT_KIND:-${TEAM_KIND:-claude}}"
-model="${AGENT_MODEL:-sonnet}"
+kind="${AGENT_KIND:-$(resolve_team_kind || true)}"
+[ -n "$kind" ] || fail_no_provider "AGENT_KIND"
+model="${AGENT_MODEL:-}"
 validate_kind "$kind"
 
 if [ "$#" -eq 1 ] && [[ "$1" != -* ]]; then model="$1"; shift; fi
