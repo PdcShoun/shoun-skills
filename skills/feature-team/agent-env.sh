@@ -2,8 +2,14 @@
 # Shared helpers for the feature-team spawn scripts.
 #
 # Agent-kind agnostic on purpose: nothing here knows any agent CLI's flags
-# except the claude defaults, which apply only when a role has no configured
-# args. Any other kind gets exactly the args you pass via <ROLE>_ARGS.
+# beyond a handful of confirmed defaults (see resolve_agent_args), which
+# apply only when a role has no configured args. Any other kind gets
+# exactly the args you pass via <ROLE>_ARGS.
+
+here_for_registry=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=model-registry.sh
+. "$here_for_registry/model-registry.sh"
+unset here_for_registry
 
 require_deps() {
   command -v jq >/dev/null || { echo "jq required"; exit 1; }
@@ -28,8 +34,8 @@ validate_kind() {
 # same account and settings as the caller. Discovery is by prefix over what is
 # actually set — no per-agent-kind knowledge — minus per-session vars that
 # point back at the launching agent.
-TEAM_ENV_PREFIXES="${TEAM_ENV_PREFIXES:-TEAM_ ANTHROPIC_ OPENAI_ AZURE_OPENAI_ GOOGLE_ GEMINI_ VERTEX_ XAI_ GROK_ MISTRAL_ DEEPSEEK_ OPENROUTER_ OLLAMA_ CODEX_ CURSOR_ COPILOT_ QWEN_ KIMI_ AMP_ OPENCODE_ PI_}"
-TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR FEATURE_TEAM_CALLER_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR TEAM_MAX_RETRIES TEAM_MAX_PARALLEL TEAM_STAGE_TIMEOUT_MS}"
+TEAM_ENV_PREFIXES="${TEAM_ENV_PREFIXES:-TEAM_ CLAUDE_ ANTHROPIC_ OPENAI_ AZURE_OPENAI_ GOOGLE_ GEMINI_ VERTEX_ XAI_ GROK_ MISTRAL_ DEEPSEEK_ OPENROUTER_ OLLAMA_ CODEX_ CURSOR_ COPILOT_ QWEN_ KIMI_ AMP_ OPENCODE_ PI_}"
+TEAM_ENV_KEYS="${TEAM_ENV_KEYS:-CLAUDE_CONFIG_DIR FEATURE_TEAM_CALLER_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE AGENT_MODEL_PROFILE CLAUDE_CODE_USE_FOUNDRY AZURE_CONFIG_DIR TEAM_MAX_RETRIES TEAM_MAX_PARALLEL TEAM_STAGE_TIMEOUT_MS}"
 TEAM_ENV_DENY="${TEAM_ENV_DENY:-CLAUDE_CODE_ HERDR_}"
 
 # Fills the TEAM_ENV array with --env K=V pairs for `herdr` calls.
@@ -54,10 +60,16 @@ build_team_env() {
   done < <(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | sort -u)
 }
 
-# Args a role's agent CLI is started with. Explicit <ROLE>_ARGS wins; the only
-# built-in default is claude's, the kind this skill was first written against
-# — a provider adapter, not a generic fallback (see § Caller-kind detection
-# below for why "claude" must never be an implicit default for OTHER kinds).
+# Args a role's agent CLI is started with. Explicit <ROLE>_ARGS always wins.
+# Below that, this is a small table of PROVIDER ADAPTERS: each kind this
+# skill has confirmed CLI syntax for gets its own case arm that knows how to
+# pass a resolved model (never guessed — see model-registry.sh); every other
+# kind either starts bare, or — only once a model was actually resolved for
+# it via configuration — gets a best-effort `--model <model>` (the one flag
+# most agent CLIs that accept a model happen to share). This is the ONLY
+# place provider-specific CLI syntax may appear; the role/orchestration
+# layer above never constructs flags itself (see feature-team/SKILL.md
+# § Model selection).
 # Fills the AGENT_ARGV array.
 AGENT_ARGV=()
 resolve_agent_args() {   # <role-label> <kind> <configured-args> <model-hint>
@@ -71,9 +83,69 @@ resolve_agent_args() {   # <role-label> <kind> <configured-args> <model-hint>
     # claude's own default flags — model hint defaults to sonnet ONLY here,
     # never bled into another kind's model resolution.
     claude) AGENT_ARGV=(--model "${model:-sonnet}" --permission-mode auto) ;;
-    *) echo "note: no ${role}_ARGS set for kind '$kind' — starting it bare;" \
-            "set ${role}_ARGS for model/auto-approve flags" >&2 ;;
+    # OpenAI's Codex CLI: confirmed syntax, so it earns its own adapter
+    # instead of falling into the generic best-effort branch below.
+    codex)
+      if [ -n "$model" ]; then AGENT_ARGV=(--model "$model" --full-auto)
+      else AGENT_ARGV=(--full-auto)
+      fi ;;
+    *)
+      if [ -n "$model" ]; then
+        AGENT_ARGV=(--model "$model")
+      else
+        echo "note: no ${role}_ARGS set for kind '$kind' — starting it bare;" \
+             "set ${role}_ARGS for model/auto-approve flags" >&2
+      fi ;;
   esac
+}
+
+# ---- Model selection ----------------------------------------------------
+# Three independent concepts: Provider (a herdr agent kind IS one provider's
+# CLI — see model-registry.sh's kind_vendor_family for the few kinds that
+# share a vendor), Model (a provider-specific identifier), and Role (PM/SA/
+# DEV/TESTER). Role skills never see or choose a model — they only ever
+# operate under whichever model the role was started with; the semantic
+# profile below is what varies per role, not the role's contract.
+
+# Built-in default profile per role when nothing configures one: PM/SA get
+# "strong" because errors in requirements/scope/architecture/design
+# propagate into every downstream worker; DEV/TESTER default to "balanced"
+# because their tasks are constrained by the SA design + acceptance
+# criteria + existing code (see feature-team/SKILL.md § Model selection for
+# the rationale in full — and its escalation guidance for when this isn't
+# enough for a given feature).
+role_default_profile() {   # <ROLE: PM|SA|DEV|TESTER>
+  case "$1" in
+    PM|SA) echo strong ;;
+    DEV|TESTER) echo balanced ;;
+    *) echo balanced ;;
+  esac
+}
+
+# Effective semantic profile for a role, highest precedence first:
+#   <ROLE>_MODEL_PROFILE  (explicit per-role)
+#   > TEAM_MODEL_PROFILE  (team-wide default)
+#   > role_default_profile (PM/SA=strong, DEV/TESTER=balanced)
+# Note this resolves the PROFILE only — resolve_role_model below layers an
+# explicit <ROLE>_MODEL on top, which wins over everything here.
+resolve_model_profile() {   # <ROLE: PM|SA|DEV|TESTER>
+  local role="$1" role_var
+  role_var="${role}_MODEL_PROFILE"
+  if [ -n "${!role_var:-}" ]; then echo "${!role_var}"; return 0; fi
+  if [ -n "${TEAM_MODEL_PROFILE:-}" ]; then echo "$TEAM_MODEL_PROFILE"; return 0; fi
+  role_default_profile "$role"
+}
+
+# Full precedence for a role's effective model:
+#   explicit <ROLE>_MODEL
+#   > provider_profile_model(kind, resolve_model_profile(role))
+#   > "" (provider's own CLI default — see resolve_agent_args; never
+#     another provider's or another profile's model)
+resolve_role_model() {   # <ROLE: PM|SA|DEV|TESTER> <kind> <explicit-model>
+  local role="$1" kind="$2" explicit="$3" profile
+  if [ -n "$explicit" ]; then echo "$explicit"; return 0; fi
+  profile=$(resolve_model_profile "$role")
+  provider_profile_model "$kind" "$profile"
 }
 
 # ---- Caller-kind detection ----------------------------------------------

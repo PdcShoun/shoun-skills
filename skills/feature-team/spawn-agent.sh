@@ -17,8 +17,14 @@
 #                loudly if none of AGENT_KIND/TEAM_KIND/detection resolve.)
 #   AGENT_ARGS   default args when none are passed positionally
 #                (falls back to $TEAM_ARGS, which spawn-team.sh forwards)
-#   AGENT_MODEL  model hint for kind claude's default args only (default
-#                sonnet); ignored (and never defaulted) for any other kind
+#   AGENT_MODEL  explicit model id — wins over AGENT_MODEL_PROFILE
+#   AGENT_MODEL_PROFILE  semantic profile (strong/balanced/fast), default
+#                "balanced" — an ad hoc/workstream helper defaults like Dev,
+#                not PM/SA (see model-registry.sh for how a profile resolves
+#                to a concrete model for this worker's kind; a provider with
+#                no configured model for that profile gets no default at
+#                all — its own CLI default applies, never another
+#                provider's model)
 # Provider/config env is forwarded from the caller's own environment; see
 # TEAM_ENV_* in agent-env.sh.
 set -euo pipefail
@@ -39,6 +45,7 @@ model="${AGENT_MODEL:-}"
 validate_kind "$kind"
 
 if [ "$#" -eq 1 ] && [[ "$1" != -* ]]; then model="$1"; shift; fi
+[ -n "$model" ] || model=$(provider_profile_model "$kind" "${AGENT_MODEL_PROFILE:-balanced}")
 if [ "$#" -gt 0 ]; then
   AGENT_ARGV=("$@")
 else

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Pure-logic test matrix for provider inheritance (agent-env.sh's
 # detect_caller_kind/resolve_team_kind/fail_no_provider and spawn-team.sh's
-# role-kind resolution). Runs spawn-team.sh's resolution logic in isolation
-# by stubbing `herdr`/`jq` calls it doesn't need for this check, so it can run
-# without a live Herdr server, without real Pi/Codex/Gemini CLIs installed,
-# and without creating any panes/workspaces.
+# role-kind resolution) AND model selection (agent-env.sh's
+# resolve_model_profile/resolve_role_model/resolve_agent_args and
+# model-registry.sh's provider_profile_model). Runs spawn-team.sh's
+# resolution logic in isolation by stubbing `herdr`/`jq` calls it doesn't
+# need for this check, so it can run without a live Herdr server, without
+# real Pi/Codex/Gemini CLIs installed, and without creating any
+# panes/workspaces.
 #
 # Usage: bash test-provider-inheritance.sh
 set -uo pipefail
@@ -17,7 +20,15 @@ pass=0 fail=0
 clean_env() {
   unset FEATURE_TEAM_CALLER_KIND TEAM_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND \
         CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED \
-        CURSOR_TRACE_ID AI_AGENT 2>/dev/null || true
+        CURSOR_TRACE_ID AI_AGENT \
+        PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL AGENT_MODEL AGENT_KIND \
+        PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE \
+        TEAM_MODEL_PROFILE AGENT_MODEL_PROFILE \
+        CLAUDE_STRONG_MODEL CLAUDE_BALANCED_MODEL CLAUDE_FAST_MODEL \
+        CODEX_STRONG_MODEL CODEX_BALANCED_MODEL CODEX_FAST_MODEL \
+        OPENAI_STRONG_MODEL OPENAI_BALANCED_MODEL OPENAI_FAST_MODEL \
+        DEEPSEEK_STRONG_MODEL DEEPSEEK_BALANCED_MODEL DEEPSEEK_FAST_MODEL \
+        GEMINI_STRONG_MODEL GEMINI_BALANCED_MODEL GEMINI_FAST_MODEL 2>/dev/null || true
 }
 
 # Runs the same resolution spawn-team.sh performs (CALLER_KIND -> TEAM_KIND ->
@@ -145,6 +156,125 @@ check "AI_AGENT slug detection — claude-code_2-1-267_agent -> claude" \
 check "Role override present, team/caller absent -> role still resolves" \
   'export PM_KIND=codex' \
   "FAIL: no provider resolved"   # SA/DEV/TESTER still unresolved -> whole team fails
+
+# ===========================================================================
+# Model selection: profile precedence, provider registry, arg adapters
+# ===========================================================================
+
+check_profile() {   # <case-name> <env-setup-code> <role> <expected-profile>
+  local name="$1" setup="$2" role="$3" expected="$4" got
+  got=$(
+    clean_env
+    eval "$setup"
+    # shellcheck source=agent-env.sh
+    . "$here/agent-env.sh" 2>/dev/null
+    resolve_model_profile "$role"
+  )
+  if [ "$got" = "$expected" ]; then
+    echo "PASS: $name"; pass=$((pass + 1))
+  else
+    echo "FAIL: $name — expected [$expected] got [$got]"; fail=$((fail + 1))
+  fi
+}
+
+# --- Case: default profiles with no configuration at all -------------------
+check_profile "Default profile — PM"     ': # nothing set' PM     "strong"
+check_profile "Default profile — SA"     ': # nothing set' SA     "strong"
+check_profile "Default profile — DEV"    ': # nothing set' DEV    "balanced"
+check_profile "Default profile — TESTER" ': # nothing set' TESTER "balanced"
+
+# --- Case 6 (matrix): team profile applies where no role override exists ---
+check_profile "TEAM_MODEL_PROFILE=fast overrides DEV's built-in default" \
+  'export TEAM_MODEL_PROFILE=fast' DEV "fast"
+check_profile "Role override still wins over TEAM_MODEL_PROFILE" \
+  'export TEAM_MODEL_PROFILE=fast; export DEV_MODEL_PROFILE=strong' DEV "strong"
+
+# --- Case 5 (matrix): DEV_MODEL_PROFILE=strong escalates Dev only ----------
+check_profile "DEV_MODEL_PROFILE=strong escalates only Dev" \
+  'export DEV_MODEL_PROFILE=strong' PM "strong"     # PM's own default, unaffected
+check_profile "DEV_MODEL_PROFILE=strong escalates only Dev (Dev itself)" \
+  'export DEV_MODEL_PROFILE=strong' DEV "strong"
+
+check_model_resolve() {   # <case-name> <env-setup> <role> <kind> <explicit-model> <expected>
+  local name="$1" setup="$2" role="$3" kind="$4" explicit="$5" expected="$6" got
+  got=$(
+    clean_env
+    eval "$setup"
+    # shellcheck source=agent-env.sh
+    . "$here/agent-env.sh" 2>/dev/null
+    resolve_role_model "$role" "$kind" "$explicit"
+  )
+  if [ "$got" = "$expected" ]; then
+    echo "PASS: $name"; pass=$((pass + 1))
+  else
+    echo "FAIL: $name — expected [$expected] got [$got]"; fail=$((fail + 1))
+  fi
+}
+
+# --- Case 2/3 (matrix): provider registry, no explicit overrides -----------
+check_model_resolve "Claude — PM defaults to strong profile's model (opus)" \
+  ': # nothing set' PM claude "" "opus"
+check_model_resolve "Claude — DEV defaults to balanced profile's model (sonnet)" \
+  ': # nothing set' DEV claude "" "sonnet"
+check_model_resolve "DeepSeek — PM defaults to strong profile's model" \
+  ': # nothing set' PM deepseek "" "deepseek-reasoner"
+check_model_resolve "DeepSeek — DEV defaults to balanced profile's model" \
+  ': # nothing set' DEV deepseek "" "deepseek-chat"
+
+# --- Case 7: provider with no seeded profile resolves empty, never another
+# provider's model (no silent switch) --------------------------------------
+check_model_resolve "OpenAI (unconfigured) — no seed default, resolves empty" \
+  ': # nothing set' PM openai "" ""
+check_model_resolve "Gemini (unconfigured) — no seed default, resolves empty" \
+  ': # nothing set' DEV gemini "" ""
+
+# --- Case 4: explicit <ROLE>_MODEL always wins ------------------------------
+check_model_resolve "Explicit model wins over profile/registry entirely" \
+  'export DEV_MODEL_PROFILE=strong' DEV claude "custom-model-id" "custom-model-id"
+
+# --- Provider-scoped override env vars, and precedence between them --------
+check_model_resolve "OPENAI_STRONG_MODEL configures the openai vendor family" \
+  'export OPENAI_STRONG_MODEL=gpt-5.1' PM openai "" "gpt-5.1"
+check_model_resolve "OPENAI_STRONG_MODEL also covers kind=codex (shared vendor family)" \
+  'export OPENAI_STRONG_MODEL=gpt-5.1' PM codex "" "gpt-5.1"
+check_model_resolve "CODEX_STRONG_MODEL (kind-specific) wins over OPENAI_STRONG_MODEL (family)" \
+  'export OPENAI_STRONG_MODEL=gpt-5.1; export CODEX_STRONG_MODEL=gpt-5.1-codex' PM codex "" "gpt-5.1-codex"
+check_model_resolve "CLAUDE_BALANCED_MODEL overrides the shipped sonnet default" \
+  'export CLAUDE_BALANCED_MODEL=claude-custom' DEV claude "" "claude-custom"
+
+# --- Mixed-provider team: each role resolves against its OWN kind ----------
+check_model_resolve "Mixed team — SA on claude still gets claude's strong model" \
+  ': # nothing set' SA claude "" "opus"
+check_model_resolve "Mixed team — DEV on deepseek still gets deepseek's balanced model" \
+  ': # nothing set' DEV deepseek "" "deepseek-chat"
+
+# --- Provider-specific CLI arguments (§ Provider-Specific CLI Arguments) ---
+check_args() {   # <case-name> <kind> <model> <expected-argv-joined-by-space>
+  local name="$1" kind="$2" model="$3" expected="$4" out
+  out=$(
+    clean_env
+    # shellcheck source=agent-env.sh
+    . "$here/agent-env.sh" 2>/dev/null
+    resolve_agent_args ROLE "$kind" "" "$model"
+    printf '%s ' "${AGENT_ARGV[@]+"${AGENT_ARGV[@]}"}"
+  )
+  if [ "$out" = "$expected" ]; then
+    echo "PASS: $name"; pass=$((pass + 1))
+  else
+    echo "FAIL: $name — expected [$expected] got [$out]"; fail=$((fail + 1))
+  fi
+}
+
+check_args "Case 8 — claude adapter with a resolved model" \
+  claude opus "--model opus --permission-mode auto "
+check_args "Case 8 — codex adapter with a resolved model" \
+  codex gpt-5.1-codex "--model gpt-5.1-codex --full-auto "
+check_args "Case 8 — codex adapter with no resolved model still gets --full-auto" \
+  codex "" "--full-auto "
+check_args "Case 8 — unconfirmed kind with a resolved model gets best-effort --model" \
+  deepseek deepseek-chat "--model deepseek-chat "
+check_args "Case 8 — unconfirmed kind with no resolved model starts bare" \
+  pi "" " "
 
 echo
 echo "== $pass passed, $fail failed =="

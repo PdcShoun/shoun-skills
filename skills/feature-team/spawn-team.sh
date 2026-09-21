@@ -16,12 +16,22 @@
 #   TEAM_ARGS            args for every role, unless overridden per role
 #   PM_ARGS SA_ARGS DEV_ARGS TESTER_ARGS
 #   e.g. TEAM_KIND=codex TEAM_ARGS="--model gpt-5-codex --full-auto"
-# With no *_ARGS, kind claude defaults to `--model <role model> --permission-mode auto`:
-#   PM_MODEL SA_MODEL (default opus), DEV_MODEL TESTER_MODEL (default sonnet)
-#   — these model defaults apply ONLY to roles resolved to kind claude; a
-#   role resolved to any other kind gets no model default (never pass a
-#   claude model name to another provider).
-# Any other kind with no *_ARGS starts bare.
+#
+# Model selection (see feature-team/SKILL.md § Model selection for the full
+# precedence and rationale; model-registry.sh is the provider model table):
+#   PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL       explicit model id, wins over everything
+#   PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE
+#     semantic profile (strong/balanced/fast) per role
+#   TEAM_MODEL_PROFILE   semantic profile for every role without its own override
+# Default profile with no configuration at all: PM/SA=strong, DEV/TESTER=
+# balanced — stronger reasoning where errors propagate furthest (PM/SA),
+# smaller/cheaper where the task is constrained by SA's design + acceptance
+# criteria (DEV/TESTER). A profile is a per-provider preference, never a
+# cross-provider equivalence claim. With no *_ARGS, a role resolved to
+# kind claude or codex starts with that provider's own confirmed default
+# flags (see resolve_agent_args in agent-env.sh); any other kind starts
+# bare unless a model was actually resolved for it via configuration, or
+# you pass the model/auto-approve flags yourself via *_ARGS.
 # Env forwarding to the team's panes: see TEAM_ENV_* in agent-env.sh.
 set -euo pipefail
 
@@ -47,19 +57,32 @@ done
 PM_ARGS="${PM_ARGS:-${TEAM_ARGS:-}}"; SA_ARGS="${SA_ARGS:-${TEAM_ARGS:-}}"
 DEV_ARGS="${DEV_ARGS:-${TEAM_ARGS:-}}"; TESTER_ARGS="${TESTER_ARGS:-${TEAM_ARGS:-}}"
 
-# Model hints are a claude-only concept (see resolve_agent_args). Only default
-# them for roles that actually resolved to kind claude; leave every other
-# role's model unset so no claude model name leaks into another provider.
-[ "$PM_KIND" = claude ] && PM_MODEL="${PM_MODEL:-opus}"
-[ "$SA_KIND" = claude ] && SA_MODEL="${SA_MODEL:-opus}"
-[ "$DEV_KIND" = claude ] && DEV_MODEL="${DEV_MODEL:-sonnet}"
-[ "$TESTER_KIND" = claude ] && TESTER_MODEL="${TESTER_MODEL:-sonnet}"
-PM_MODEL="${PM_MODEL:-}"; SA_MODEL="${SA_MODEL:-}"; DEV_MODEL="${DEV_MODEL:-}"; TESTER_MODEL="${TESTER_MODEL:-}"
+# Model resolution: explicit <ROLE>_MODEL > <ROLE>_MODEL_PROFILE >
+# TEAM_MODEL_PROFILE > role's built-in default profile (PM/SA=strong,
+# DEV/TESTER=balanced) resolved against the role's OWN kind's provider
+# table (see agent-env.sh's resolve_role_model / model-registry.sh). A
+# role's model is always resolved for its own kind — never another
+# provider's model, and a missing provider entry resolves empty (that
+# provider's native CLI default), never a silent switch to another
+# provider.
+PM_PROFILE=$(resolve_model_profile PM)
+SA_PROFILE=$(resolve_model_profile SA)
+DEV_PROFILE=$(resolve_model_profile DEV)
+TESTER_PROFILE=$(resolve_model_profile TESTER)
+
+PM_MODEL=$(resolve_role_model PM "$PM_KIND" "${PM_MODEL:-}")
+SA_MODEL=$(resolve_role_model SA "$SA_KIND" "${SA_MODEL:-}")
+DEV_MODEL=$(resolve_role_model DEV "$DEV_KIND" "${DEV_MODEL:-}")
+TESTER_MODEL=$(resolve_role_model TESTER "$TESTER_KIND" "${TESTER_MODEL:-}")
 
 for k in "$PM_KIND" "$SA_KIND" "$DEV_KIND" "$TESTER_KIND"; do validate_kind "$k"; done
 
-# Provider selection is diagnosable, not just correct — log it (no secrets).
+# Provider/model selection is diagnosable, not just correct — log it (no secrets).
 echo "[TEAM] caller=${CALLER_KIND:-unknown} pm=$PM_KIND sa=$SA_KIND dev=$DEV_KIND tester=$TESTER_KIND" >&2
+echo "[MODELS] PM      profile=$PM_PROFILE     model=${PM_MODEL:-<provider-default>}" >&2
+echo "[MODELS] SA      profile=$SA_PROFILE     model=${SA_MODEL:-<provider-default>}" >&2
+echo "[MODELS] DEV     profile=$DEV_PROFILE   model=${DEV_MODEL:-<provider-default>}" >&2
+echo "[MODELS] TESTER  profile=$TESTER_PROFILE   model=${TESTER_MODEL:-<provider-default>}" >&2
 
 # Export the resolved (not just the user-supplied) kinds so build_team_env
 # forwards them into every pane below. This matters even when TEAM_KIND was
@@ -70,6 +93,9 @@ echo "[TEAM] caller=${CALLER_KIND:-unknown} pm=$PM_KIND sa=$SA_KIND dev=$DEV_KIN
 # spawn-agent.sh/spawn-workstream.sh for a retry/resume/workstream would hit
 # fail_no_provider instead of reusing the team's actual provider.
 export TEAM_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND
+export PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL
+export PM_MODEL_PROFILE="$PM_PROFILE" SA_MODEL_PROFILE="$SA_PROFILE" \
+       DEV_MODEL_PROFILE="$DEV_PROFILE" TESTER_MODEL_PROFILE="$TESTER_PROFILE"
 [ -n "${CALLER_KIND:-}" ] && export FEATURE_TEAM_CALLER_KIND="$CALLER_KIND"
 
 # Agents of kind claude drive their teammates through the herdr skill — make
@@ -119,10 +145,15 @@ jq -n --arg ws "$ws" --arg dir "$here" --arg default_branch "$(detect_default_br
   --arg p1 "$p1" --arg p2 "$p2" --arg p3 "$p3" --arg p4 "$p4" \
   --arg caller "${CALLER_KIND:-}" \
   --arg k1 "$PM_KIND" --arg k2 "$SA_KIND" --arg k3 "$DEV_KIND" --arg k4 "$TESTER_KIND" \
+  --arg m1 "$PM_MODEL" --arg m2 "$SA_MODEL" --arg m3 "$DEV_MODEL" --arg m4 "$TESTER_MODEL" \
+  --arg pr1 "$PM_PROFILE" --arg pr2 "$SA_PROFILE" --arg pr3 "$DEV_PROFILE" --arg pr4 "$TESTER_PROFILE" \
   --argjson role_skills "$(role_skills_json)" \
   '{workspace: $ws, skill_dir: $dir, default_branch: $default_branch,
     panes: {pm: $p1, sa: $p2, dev: $p3, tester: $p4},
     caller_kind: (if $caller == "" then null else $caller end),
     kinds: {pm: $k1, sa: $k2, dev: $k3, tester: $k4},
+    models: {pm: (if $m1 == "" then null else $m1 end), sa: (if $m2 == "" then null else $m2 end),
+             dev: (if $m3 == "" then null else $m3 end), tester: (if $m4 == "" then null else $m4 end)},
+    model_profiles: {pm: $pr1, sa: $pr2, dev: $pr3, tester: $pr4},
     role_skills: $role_skills,
     agents: ["pm", "sa", "dev", "tester"]}'

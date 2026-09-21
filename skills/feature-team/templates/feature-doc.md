@@ -20,8 +20,34 @@ scripts (checkpoint.sh, notify.sh, spawn-workstream.sh) parse it verbatim.
 
 ## Acceptance Criteria
 
-1. <criterion> — PENDING
-2. <criterion> — PENDING
+Each criterion carries a verification level (`static`/`unit`/`integration`/
+`contract`/`e2e`/`manual`) and whether that level is `required` for PASS — SA
+proposes both while planning, PM records them here, and Tester may confirm or
+adjust the level during verification (never silently — see feature-tester).
+
+1. <criterion> — PENDING [level: <level>, required: <yes/no>]
+2. <criterion> — PENDING [level: <level>, required: <yes/no>]
+
+## Verification Strategy
+
+<SA fills this in at planning time (feature-sa's `## Verification strategy`
+output); PM copies it here before Dev starts; Tester treats it as the
+required minimum and may raise or lower a level with reasoning. Omit the E2E
+block entirely when no criterion needs it — most features don't.>
+
+Required levels for this feature: <subset of static/unit/integration/contract/e2e/manual>
+
+E2E: <omit this whole block if no criterion above needs e2e>
+- required: yes
+- framework: <discovered from the repo — e.g. playwright/cypress/a repo-native runner; never assumed. If none exists and E2E is genuinely required, say so as an open question for PM instead of proposing to add one.>
+- scenarios:
+  - id: E2E-1
+    name: <scenario name>
+    setup: <seeded/controlled state this scenario starts from>
+    expected: <the observable, deterministic outcome>
+
+Regression areas: <existing behavior this change risks breaking, worth a
+regression check even without a dedicated acceptance criterion>
 
 ## Technical constraints
 
@@ -45,13 +71,13 @@ Check off only the lines that apply to this feature; delete the rest instead
 of leaving them unchecked — an unchecked-but-irrelevant line reads as an open
 gap on resume.
 
-- [ ] All acceptance criteria PASS
+- [ ] All acceptance criteria PASS at (or above) their required verification level
 - [ ] Tests added/updated and passing
 - [ ] Lint / typecheck pass
 - [ ] Production build passes
 - [ ] DB migration present, and applies cleanly to a fresh database
 - [ ] API contract/schema updated
-- [ ] Frontend/backend integration verified end-to-end
+- [ ] Required E2E/regression scenarios (per Verification Strategy) PASS, deterministically
 - [ ] AuthN/AuthZ and other security-sensitive paths checked
 - [ ] Docker build/run/healthcheck verified
 - [ ] Final diff reviewed against the default branch
@@ -107,6 +133,7 @@ All 7 acceptance criteria passed, including migration UP/DOWN verification.
 Evidence:
 - Report: .tmp/tester-report-1.md
 - Migration UP/DOWN and existing-user backfill verified
+- 4/4 required E2E scenarios PASS (playwright)
 
 PM verification:
 - Typecheck: 6/6 PASS
@@ -154,7 +181,22 @@ max_retries: 3
 next_action:
 blocking_reason:
 notified: false
+pm_kind:
+pm_model:
+sa_kind:
+sa_model:
+dev_kind:
+dev_model:
+tester_kind:
+tester_model:
 ```
+
+`*_kind`/`*_model` record the effective provider/model each role actually
+started with (from spawn-team.sh's JSON output — see feature-team/SKILL.md
+§ Model selection). On resume, a role keeps this same provider/model unless
+the user explicitly changes it or PM explicitly escalates it (e.g. Dev
+balanced → strong after a defect) — record any such change here AND as its
+own Progress Log stamp, not silently.
 
 ### State values
 

@@ -37,9 +37,11 @@ When any two disagree, reality wins and you correct the doc.
 
 ## Before any implementation
 
-Turn the request into the doc's Problem / Scope / Out of scope / Acceptance Criteria / Technical constraints / Non-functional requirements / Open questions / Risks.
+Turn the request into the doc's Problem / Scope / Out of scope / Acceptance Criteria / Verification Strategy / Technical constraints / Non-functional requirements / Open questions / Risks.
 
 Good acceptance criteria are **observable and falsifiable**: someone who did not read this conversation can run something, or look at something, and say PASS or FAIL. "Export works well" is not a criterion. "`GET /api/export?format=csv` returns 200 with a CSV of the caller's own records only; a request for another tenant's id returns 404" is.
+
+Every criterion also gets a verification level (`static`/`unit`/`integration`/`contract`/`e2e`/`manual`) and a `required` flag, copied from SA's plan into the doc. Select the minimum level that gives real confidence — most criteria don't need `e2e`; reserve it for a user-facing or multi-step workflow, or a criterion nothing cheaper can prove. Don't let "add E2E everywhere" or "skip E2E everywhere" become the reflex — the level is a per-criterion judgment call, made once at planning and revisited by Tester if the real diff says otherwise.
 
 Separate the two kinds of unknown:
 - **Open question** — work can start; it must be resolved or explicitly dropped before done. Record it.
@@ -51,7 +53,7 @@ The test for "material": if you guessed wrong, would the work have to be redone 
 
 Every prompt you send is self-contained (feature-handoff) and tells the worker to read its role skill first. Your teammates may be a different agent kind than you, in a different working tree, with none of your context.
 
-- **SA before Dev.** Don't let implementation start on an unexamined design. If SA flags something that needs a product decision, that is yours to resolve or escalate — not Dev's to improvise around.
+- **SA before Dev.** Don't let implementation start on an unexamined design. If SA flags something that needs a product decision, that is yours to resolve or escalate — not Dev's to improvise around. This includes SA's verification strategy: if a required level (especially `e2e`) has no framework in the repo to satisfy it, resolve that before Dev starts — accept the gap and record it, pick a level Tester can actually prove, or escalate — rather than letting Tester discover it at the end.
 - **Tester is a gate, not a formality.** Never skip it because the change "looks obviously right", and never let Dev self-certify.
 - **Split into parallel workstreams only when they touch disjoint files and neither needs the other's output to be testable.** Anything else is sequential. Every concurrent code-writing worker gets its own worktree — two writers in one tree is never acceptable, no matter how small the change (feature-git § Isolation).
 - Record each stream's owner, branch/worktree, sub-issue, status, and dependencies in the doc's Workstreams table. That table is how a fresh PM process reconstructs the topology; if it is stale, resume is guesswork.
@@ -111,6 +113,7 @@ Do not blindly trust the Progress Log's last entry either — it is a record of 
 Before you call anything done:
 
 - every acceptance criterion has a PASS with evidence, from Tester, not from Dev
+- every criterion marked `required` in the Verification Strategy was proven at (or above) its assigned level — a PASS obtained at a lower level than required is not sufficient, and a required E2E scenario that never ran is a missing verification, not a detail to wave through
 - the Definition of Done is actually satisfied — check off what applies and **delete** the lines that don't, so nothing reads as a silent gap
 - you read the final diff yourself against the default branch
 - open questions are resolved or explicitly dropped in writing
@@ -126,6 +129,7 @@ If you edited application source yourself at any point, it goes through Tester l
 - overrule SA's architecture silently — disagree in the doc, with reasoning, or send it back to SA
 - let two concurrent writers share a working tree
 - mark done before independent verification, or with a criterion left unevidenced
+- treat a PASS obtained below a criterion's required verification level as sufficient to call the feature done
 - merge a PR unless the user's original request explicitly asked for a merge (opening ≠ merging)
 - notify twice, or notify with a summary you have not verified
 - report success you did not observe — an honest `blocked` is a better outcome than a false `done`

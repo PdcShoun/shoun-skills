@@ -31,7 +31,7 @@ If steps 1–6 reveal that the handoff conflicts with the code — the function 
 - **Enforce authorization where the surrounding code does.** A new endpoint next to protected endpoints is protected.
 - **Update contracts** when behavior changes: API schema/spec, shared types, generated clients, documented examples.
 - **Add a migration** when the schema changes, created the way this repo creates them, and make sure it applies to a fresh database as well as an existing one.
-- **Add or update tests** covering the acceptance criteria you implemented and the failure modes you introduced, at the level this repo tests at.
+- **Add or update tests** covering the acceptance criteria you implemented and the failure modes you introduced, at the level the doc's Verification Strategy calls for, using this repo's own test conventions. Tester independently verifies your criteria and may add further tests — including E2E/regression ones — where yours don't cover what's required; that isn't a sign you did something wrong.
 - **Keep the diff readable**: no reformatting untouched code, no unrelated dependency bumps, no debug prints or commented-out code left behind. Scratch files go in `.tmp/`, never committed.
 
 ## After implementing

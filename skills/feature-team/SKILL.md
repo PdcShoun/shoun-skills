@@ -27,7 +27,8 @@ Scratch files stay in the repo: never write to `/tmp` or other system temp dirs.
 | `notify.sh` | fire the terminal notification exactly once per feature (checks/sets `notified` in the doc) |
 | `vcs.sh` | forge-agnostic issue/PR operations — detects GitHub/GitLab/Gitea from `origin` and drives `gh`/`glab`/`tea` accordingly |
 | `role-skill.sh` | print the absolute path of a role contract (`pm`/`sa`/`dev`/`tester`/`handoff`/`git`/`security`), or `--json` for all |
-| `test-provider-inheritance.sh` | regression test for the provider-inheritance precedence/detection logic (see Provider inheritance below) — run it after touching `agent-env.sh`/`spawn-team.sh`'s kind resolution |
+| `model-registry.sh` | maps `<provider, model profile>` → a concrete model id; sourced by `agent-env.sh` (see § Model selection) — the ONLY place provider model ids live |
+| `test-provider-inheritance.sh` | regression test for provider-inheritance precedence/detection (see Provider inheritance) AND model-profile/registry resolution (see Model selection) — run it after touching `agent-env.sh`/`spawn-team.sh`'s kind or model resolution, or `model-registry.sh` |
 | `templates/feature-doc.md` | the tracking-doc skeleton (state machine, acceptance criteria, DoD, resume state) |
 
 All of them accept `-h`/malformed-arg errors verbatim from `herdr`/`git` — no retry logic hides a real failure.
@@ -95,7 +96,144 @@ Explicit configuration always wins — setting some roles explicitly does not no
 
 Provider identity is a runtime concern, never inferred from the repo (no scanning for `.claude/`, no guessing from language/framework/installed binaries).
 
-Models follow the same rule: `PM_MODEL`/`SA_MODEL`/`DEV_MODEL`/`TESTER_MODEL` only apply to a role that resolved to kind `claude` (its own model-hint convention: `opus`/`sonnet`). A role resolved to any other kind gets no model default at all — the provider picks its own default, or you set one via that role's `*_ARGS`. A claude model name is never passed to a non-claude provider.
+## Model selection
+
+Three independent concepts, never conflated:
+
+```
+Role      PM / SA / DEV / TESTER — a fixed contract (feature-pm/sa/dev/tester); never changes with the model
+Provider  the agent kind's own vendor/CLI (claude, codex→openai, gemini, deepseek, ...)
+Model     a provider-specific identifier ("opus", "gpt-5.1", "deepseek-reasoner", ...)
+```
+
+Between Role and Model sits one more concept, **Model Profile** — a semantic
+preference, not a model name:
+
+```
+strong     for planning/reasoning-heavy work
+balanced   for well-constrained implementation work
+fast       for cheap, narrowly-scoped work
+```
+
+`strong`/`balanced`/`fast` are per-provider *selection preferences*, never a
+cross-provider equivalence claim — `strong` on Claude and `strong` on
+DeepSeek are each "the configured stronger model for that provider," not
+"the same tier of model." Role skills (`feature-pm`/`sa`/`dev`/`tester`)
+never mention a provider or a model name — see § Why PM/SA default stronger.
+
+### Precedence
+
+For each role, highest first:
+
+```
+explicit <ROLE>_MODEL           e.g. DEV_MODEL=gpt-5.1-mini
+    > <ROLE>_MODEL_PROFILE       e.g. DEV_MODEL_PROFILE=strong
+    > TEAM_MODEL_PROFILE         team-wide default profile
+    > role's built-in default profile (PM/SA=strong, DEV/TESTER=balanced)
+```
+
+The resolved profile is then looked up in **model-registry.sh**, the one
+file that maps `<provider, profile> → model id`, for the role's OWN
+resolved kind (§ Provider inheritance above) — never another kind's model.
+`model-registry.sh` itself checks, in order: `<KIND>_<PROFILE>_MODEL` (e.g.
+`CODEX_STRONG_MODEL`), then `<VENDOR-FAMILY>_<PROFILE>_MODEL` (e.g.
+`OPENAI_STRONG_MODEL`, which also covers kind `codex`), then a small set of
+seed defaults it ships with, then empty. **Empty means "no opinion" — the
+provider's own CLI default applies.** A missing profile entry for a
+provider never falls back to another provider's model; that would be a
+silent provider switch, which this skill never does (same principle as the
+kind-detection fail path above).
+
+### Why PM/SA default to a stronger profile
+
+PM owns requirements interpretation, scope, acceptance criteria,
+orchestration, retries, and lifecycle decisions; SA owns architecture,
+system impact, API/data design, security tradeoffs, and migration design.
+Errors at either stage propagate into every downstream worker — a wrong
+acceptance criterion or a flawed design gets implemented and "tested"
+against the wrong target. Dev and Tester's tasks are narrower and more
+constrained (by the acceptance criteria + SA's design + existing code + a
+test plan), so a smaller/cheaper model is *often* sufficient — but not
+always; escalate per-feature when it isn't (below).
+
+### Examples
+
+Caller = Pi, provider = OpenAI, no explicit overrides:
+
+```
+PM      → OpenAI's configured "strong" model
+SA      → OpenAI's configured "strong" model
+DEV     → OpenAI's configured "balanced" model
+TESTER  → OpenAI's configured "balanced" model
+```
+
+Mixed providers (explicit configuration only — never automatic):
+
+```
+SA_KIND=claude   SA_MODEL_PROFILE=strong \
+DEV_KIND=deepseek DEV_MODEL_PROFILE=balanced \
+bash "$SKILL_DIR/spawn-team.sh" bulk-export
+# → PM=<caller>, SA=claude strong, DEV=deepseek balanced, TESTER=<caller> balanced
+```
+
+Cost/quality tradeoff, orchestration unchanged either way:
+
+```
+DEV_MODEL_PROFILE=fast TESTER_MODEL_PROFILE=fast     # cheaper
+DEV_MODEL_PROFILE=strong TESTER_MODEL_PROFILE=strong # highest quality
+```
+
+### Per-feature escalation
+
+PM may escalate a role's profile for a specific feature or retry — this is
+always an explicit configuration/decision, never an automatic judgment call
+based on vague difficulty heuristics:
+
+```
+Simple feature:   PM=strong SA=strong DEV=balanced TESTER=fast
+Complex feature:  PM=strong SA=strong DEV=strong   TESTER=balanced
+High-risk:        PM=strong SA=strong DEV=strong   TESTER=strong
+```
+
+To escalate mid-run (e.g. after a Tester-caught defect), set
+`AGENT_MODEL_PROFILE=strong` (or `AGENT_MODEL=<explicit>`) before
+respawning that worker via `spawn-agent.sh`/`spawn-workstream.sh`, record
+the new `<role>_kind`/`<role>_model` in the doc's `\`\`\`state` block, and
+checkpoint the change explicitly (STAGE `PM`, mentioning the escalation in
+`--summary`) — see templates/feature-doc.md's `state` block and the Dev↔
+Tester loop below. Never change a role's model silently.
+
+### Retry and resume
+
+`spawn-team.sh` exports the resolved `PM_MODEL`/`SA_MODEL`/`DEV_MODEL`/
+`TESTER_MODEL` (and their `*_MODEL_PROFILE`s) into the team's own panes, the
+same way it exports the resolved kinds — so a PM that later calls
+`spawn-agent.sh`/`spawn-workstream.sh` for a crash-respawn or a retry
+reuses the team's actual configuration instead of re-deriving (or losing)
+it. A resumed feature keeps each role's persisted `*_kind`/`*_model` (§
+Resume state in templates/feature-doc.md) unless the user changes it or PM
+explicitly escalates it.
+
+## Verification strategy
+
+Mirrors § Model selection: verification is a per-feature strategy, not a fixed rule, and neither concept below is ever hardcoded to a specific tool.
+
+```
+Verification level   static / unit / integration / contract / e2e / manual —
+                      chosen per acceptance criterion, for the minimum
+                      confidence that criterion needs; never "e2e for
+                      everything" and never skipped for a criterion that
+                      genuinely needs it
+Test framework        whatever this repository already uses — discovered,
+                      never assumed (no default to Playwright, Cypress,
+                      pytest, npm test, or any other named tool)
+```
+
+SA proposes the initial strategy while planning (feature-sa's `## Verification strategy` output section); PM records it into the doc's `## Verification Strategy` section and the per-criterion `[level: ..., required: ...]` tags (see `templates/feature-doc.md`) before Dev starts. Tester re-confirms or adjusts it during verification — Tester is the one actually running checks against the real diff, and may find a level insufficient (or more than needed) once it exists.
+
+E2E is a *conditional* requirement, not a default: it applies only when a user-facing/multi-step workflow, an explicit acceptance criterion, or a Tester-identified risk needs it. A feature with no such criterion needs no E2E block at all — omit it from the doc rather than writing `required: no` everywhere.
+
+Discovering the repo's actual E2E framework (or confirming none exists) is SA's job at planning and Tester's job at verification, both via the same discovery list (feature-sa § Inspect before you design, feature-tester § Discover the repo's own commands): package manifest, `Makefile`/`Taskfile`/`justfile`, README/CONTRIBUTING, CI config, test directories, and framework-specific config files (`playwright.config.*`, `cypress.config.*`, or whatever else the repo actually uses). If E2E is required and no framework exists, that is a flag to PM (feature-sa § Flagging, feature-tester's Report `recommendation: ESCALATE`) — introducing a new E2E framework is an infrastructure decision, never something SA or Tester adopts unilaterally.
 
 ## Setup — one command
 
@@ -116,14 +254,17 @@ Configuration (env vars, all optional):
 | `PM_KIND` `SA_KIND` `DEV_KIND` `TESTER_KIND` | per-role kind override |
 | `TEAM_ARGS` | args passed verbatim to every agent CLI after `--` |
 | `PM_ARGS` `SA_ARGS` `DEV_ARGS` `TESTER_ARGS` | per-role args override |
-| `PM_MODEL` `SA_MODEL` (default `opus`), `DEV_MODEL` `TESTER_MODEL` (default `sonnet`) | model for kind `claude`'s default args only — inert for any other kind |
+| `PM_MODEL` `SA_MODEL` `DEV_MODEL` `TESTER_MODEL` | explicit model id per role — wins over everything below (see § Model selection) |
+| `PM_MODEL_PROFILE` `SA_MODEL_PROFILE` `DEV_MODEL_PROFILE` `TESTER_MODEL_PROFILE` | semantic profile (`strong`/`balanced`/`fast`) per role |
+| `TEAM_MODEL_PROFILE` | semantic profile for every role without its own override (default when unset: PM/SA=`strong`, DEV/TESTER=`balanced`) |
+| `<KIND>_<PROFILE>_MODEL` / `<VENDOR>_<PROFILE>_MODEL` | provider-scoped model config, e.g. `CLAUDE_STRONG_MODEL`, `OPENAI_BALANCED_MODEL`, `DEEPSEEK_FAST_MODEL` — see `model-registry.sh` |
 | `TEAM_ENV_PREFIXES` `TEAM_ENV_KEYS` `TEAM_ENV_DENY` | which env vars reach the team's panes (see `agent-env.sh`) |
 | `FEATURE_GIT_PROVIDER` | force the forge (`github`/`gitlab`/`gitea`) instead of auto-detecting it from `origin`'s hostname — needed for a self-hosted instance on a domain that doesn't contain "github"/"gitlab"/"gitea" (see `vcs.sh`) |
 | `TEAM_MAX_RETRIES` | default `3` — max Dev↔Tester fix/re-verify cycles per workstream before PM must mark `blocked`/`failed` |
 | `TEAM_MAX_PARALLEL` | default `4` — max concurrent workstreams (beyond the always-sequential `main`) |
 | `TEAM_STAGE_TIMEOUT_MS` | default `600000` — the timeout PM should pass to `herdr agent prompt --wait` for SA/Dev/Tester turns |
 
-With no `*_ARGS`, kind `claude` starts as `--model <role model> --permission-mode auto`. **Any other kind starts bare** — the script does not guess another CLI's flags, so pass the model and auto-approve flags yourself, e.g.:
+With no `*_ARGS`, kind `claude` starts as `--model <resolved model> --permission-mode auto` and kind `codex` as `--model <resolved model> --full-auto` (or bare `--full-auto` if no model resolved) — the two provider adapters this skill has confirmed CLI syntax for. **Any other kind starts bare unless a model was actually resolved for it via configuration**, in which case it gets a best-effort `--model <resolved model>` — the script never guesses auto-approve flags for an unconfirmed CLI, so pass those yourself, e.g.:
 
 ```bash
 TEAM_KIND=codex TEAM_ARGS="--model gpt-5-codex --full-auto" bash "$SKILL_DIR/spawn-team.sh" bulk-export
@@ -151,7 +292,7 @@ Set TEAM_KIND explicitly, or export FEATURE_TEAM_CALLER_KIND=<kind> (pi, claude,
 
 ## Handoff — give PM the whole task
 
-Pick the slug first. If `docs/features/<slug>.md` already exists, this is a resume of that feature regardless of its recorded `status` (even `done`/`failed`/`cancelled` — the RESUME CHECK below decides what, if anything, still needs doing). Send one kickoff prompt to PM (substitute the user's request, the slug, `skill_dir`, and `default_branch`), then your orchestration job is done:
+Pick the slug first. If `docs/features/<slug>.md` already exists, this is a resume of that feature regardless of its recorded `status` (even `done`/`failed`/`cancelled` — the RESUME CHECK below decides what, if anything, still needs doing). Send one kickoff prompt to PM (substitute the user's request, the slug, `skill_dir`, `default_branch`, and the `kinds`/`models` JSON from spawn-team.sh's output — PM records these into the doc's `\`\`\`state` block at kickoff, see § Model selection), then your orchestration job is done:
 
 ```bash
 herdr agent prompt pm "<PM BRIEFING below, with <user request> filled in>" --wait --until idle --timeout 300000
@@ -220,11 +361,28 @@ Fresh start: run `git status`; if the tree is dirty with unrelated changes,
 stop and report instead of branching over someone's uncommitted work.
 Otherwise create branch feat/<slug> off <default_branch> (never off a stale
 local ref) BEFORE any work. Copy <skill_dir>/templates/feature-doc.md to
-docs/features/<slug>.md.
+docs/features/<slug>.md, then record the resolved kind/model each role
+actually started with (from the `kinds`/`models` JSON you were given):
+  bash <skill_dir>/checkpoint.sh docs/features/<slug>.md SYSTEM STARTED \
+    --summary "Team started: pm=<pm kind>/<pm model>, sa=<sa kind>/<sa model>, dev=<dev kind>/<dev model>, tester=<tester kind>/<tester model>." \
+    --result "Team is running." --next "Begin planning." \
+    --set pm_kind=<pm kind> --set pm_model=<pm model or blank> \
+    --set sa_kind=<sa kind> --set sa_model=<sa model or blank> \
+    --set dev_kind=<dev kind> --set dev_model=<dev model or blank> \
+    --set tester_kind=<tester kind> --set tester_model=<tester model or blank>
+If you later escalate a role's model (e.g. Dev balanced → strong after a
+Tester-caught defect), update that role's `*_model` field the same way and
+say so in the checkpoint's --summary (see § Model selection in this skill
+and the Dev↔Tester loop below) — never change it silently.
 
 BEFORE any implementation, turn the request into the doc's Problem/Scope/
-Out of scope/Acceptance Criteria/Technical constraints/Non-functional
-requirements/Open questions/Risks sections. If a question materially
+Out of scope/Acceptance Criteria/Verification Strategy/Technical
+constraints/Non-functional requirements/Open questions/Risks sections. The
+Verification Strategy (per-criterion level + required flag, plus an E2E
+block only when a criterion genuinely needs it) comes from SA's plan — see
+<role_skills.sa> and this skill's § Verification strategy; do not let Dev
+start until it is recorded, and resolve any framework gap SA flags rather
+than leaving it for Tester to discover. If a question materially
 affects architecture, security, data integrity, cost, or user-visible
 behavior and you cannot resolve it from the repo/docs, do NOT guess: set
 status=blocked, blocking_reason=<the question>, and notify — see
@@ -297,7 +455,15 @@ send it through Tester before calling it done — do not bless your own edits.
 All workers report progress to PM as they go; PM checkpoints it. A worker's
 pane is not the record — the doc is.
 
-Dev↔Tester loop: Tester FAIL → checkpoint a concise defect summary (STAGE
+Dev↔Tester loop: Tester's report ends with a recommendation
+(PASS/RETURN_TO_DEV/ESCALATE — see <role_skills.tester> § Report), distinct
+from its PASS/FAIL/BLOCKED verdict. RETURN_TO_DEV is the ordinary FAIL path
+below. ESCALATE (e.g. a required E2E framework doesn't exist, a criterion is
+untestable as written) is NOT a Dev retry — checkpoint it and set
+status=blocked with blocking_reason, then notify, same as any other
+Escalation case; do not spend a retry sending it to Dev.
+
+Tester FAIL/RETURN_TO_DEV → checkpoint a concise defect summary (STAGE
 TESTER, STATUS FAIL — 1-2 sentences plus the failing criteria numbers in
 --evidence, referencing Tester's full report file for the reproduction
 detail; never paste the whole report into the stamp), --set
@@ -311,6 +477,17 @@ call — see <role_skills.pm> § Retries. At retry_count_dev >= max_retries
 loop, checkpoint the retry exhaustion, set status=blocked (or failed if the
 approach itself is unworkable), explain why in blocking_reason, and notify —
 do not loop forever.
+
+If a retry's defect suggests the failing role's model was the limiting
+factor (not the failure itself, which the retry loop above already covers),
+you may escalate its profile before respawning it —
+`AGENT_MODEL_PROFILE=strong bash <skill_dir>/spawn-agent.sh` (or
+`spawn-workstream.sh` for an isolated stream) — and record both the
+escalation and the resulting model in the same RETRY checkpoint, e.g.
+`--summary "Dev retry after Tester found an authorization defect; Dev
+escalated from balanced to strong." --set dev_model=<new model>`. This is
+always an explicit decision you make, never an automatic one triggered by
+retry count alone.
 
 Parallelism: after SA's plan, split into INDEPENDENT workstreams only under
 the test in <role_skills.pm> § Coordinating workers (disjoint files, neither
@@ -379,9 +556,11 @@ and update an existing one instead of opening a second. Opening a PR/MR and
 merging one are different operations — never merge unless the user's
 original request explicitly said to.
 
-Completion contract: after Tester's final PASS and the doc's Definition of
-Done is fully satisfied (checked off, irrelevant lines deleted, not just
-skipped in silence), write the final summary into the doc's `## Result`
+Completion contract: after Tester's final PASS (every required criterion
+verified at or above its Verification Strategy level, including any
+required E2E/regression scenarios) and the doc's Definition of Done is fully
+satisfied (checked off, irrelevant lines deleted, not just skipped in
+silence), write the final summary into the doc's `## Result`
 section (and mirror it to the issue — that section stays the detailed
 writeup; the DONE stamp below stays a 1-2 sentence pointer to it), set
 status=done (or ready_for_pr/pr_opened as you pass through them). If
