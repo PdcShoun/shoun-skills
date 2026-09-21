@@ -18,17 +18,23 @@ pass=0 fail=0
 # Isolate env: strip every signal detect_caller_kind might pick up from the
 # real environment this test happens to run in, so each case starts blank.
 clean_env() {
-  unset FEATURE_TEAM_CALLER_KIND TEAM_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND \
+  unset FEATURE_TEAM_CALLER_KIND TEAM_KIND PM_KIND SA_KIND DEV_KIND TESTER_KIND REVIEWER_KIND \
         CLAUDECODE CLAUDE_CODE_ENTRYPOINT CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED \
         CURSOR_TRACE_ID AI_AGENT \
-        PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL AGENT_MODEL AGENT_KIND \
-        PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE \
+        PM_MODEL SA_MODEL DEV_MODEL TESTER_MODEL REVIEWER_MODEL AGENT_MODEL AGENT_KIND \
+        PM_MODEL_PROFILE SA_MODEL_PROFILE DEV_MODEL_PROFILE TESTER_MODEL_PROFILE REVIEWER_MODEL_PROFILE \
         TEAM_MODEL_PROFILE AGENT_MODEL_PROFILE \
-        CLAUDE_STRONG_MODEL CLAUDE_BALANCED_MODEL CLAUDE_FAST_MODEL \
-        CODEX_STRONG_MODEL CODEX_BALANCED_MODEL CODEX_FAST_MODEL \
-        OPENAI_STRONG_MODEL OPENAI_BALANCED_MODEL OPENAI_FAST_MODEL \
-        DEEPSEEK_STRONG_MODEL DEEPSEEK_BALANCED_MODEL DEEPSEEK_FAST_MODEL \
-        GEMINI_STRONG_MODEL GEMINI_BALANCED_MODEL GEMINI_FAST_MODEL 2>/dev/null || true
+        TEAM_CONNECTION PM_CONNECTION SA_CONNECTION DEV_CONNECTION TESTER_CONNECTION REVIEWER_CONNECTION \
+        FEATURE_COMPLEXITY REVIEWER_ENABLED FEATURE_TEAM_USER_CONFIG \
+        CLAUDE_TOP_MODEL CLAUDE_STRONG_MODEL CLAUDE_BALANCED_MODEL CLAUDE_FAST_MODEL \
+        CODEX_TOP_MODEL CODEX_STRONG_MODEL CODEX_BALANCED_MODEL CODEX_FAST_MODEL \
+        OPENAI_TOP_MODEL OPENAI_STRONG_MODEL OPENAI_BALANCED_MODEL OPENAI_FAST_MODEL \
+        DEEPSEEK_TOP_MODEL DEEPSEEK_STRONG_MODEL DEEPSEEK_BALANCED_MODEL DEEPSEEK_FAST_MODEL \
+        GEMINI_TOP_MODEL GEMINI_STRONG_MODEL GEMINI_BALANCED_MODEL GEMINI_FAST_MODEL 2>/dev/null || true
+  # Point at a nonexistent user config so this repo's real (if any) or the
+  # runner's actual ~/.config/feature-team/config.yaml never leaks into a
+  # test that expects pure built-in defaults.
+  export FEATURE_TEAM_USER_CONFIG="/nonexistent/feature-team-test/config.yaml"
 }
 
 # Runs the same resolution spawn-team.sh performs (CALLER_KIND -> TEAM_KIND ->
@@ -177,11 +183,15 @@ check_profile() {   # <case-name> <env-setup-code> <role> <expected-profile>
   fi
 }
 
-# --- Case: default profiles with no configuration at all -------------------
-check_profile "Default profile — PM"     ': # nothing set' PM     "strong"
-check_profile "Default profile — SA"     ': # nothing set' SA     "strong"
-check_profile "Default profile — DEV"    ': # nothing set' DEV    "balanced"
-check_profile "Default profile — TESTER" ': # nothing set' TESTER "balanced"
+# --- Case: default profiles with no configuration at all (normal complexity,
+# no repo/user config) — see feature-team/SKILL.md § Recommended default
+# model policy: SA defaults one tier above PM ("top") since an architecture
+# error propagates furthest. -------------------------------------------------
+check_profile "Default profile — PM"       ': # nothing set' PM       "strong"
+check_profile "Default profile — SA"       ': # nothing set' SA       "top"
+check_profile "Default profile — DEV"      ': # nothing set' DEV      "balanced"
+check_profile "Default profile — TESTER"   ': # nothing set' TESTER   "balanced"
+check_profile "Default profile — REVIEWER" ': # nothing set' REVIEWER "strong"
 
 # --- Case 6 (matrix): team profile applies where no role override exists ---
 check_profile "TEAM_MODEL_PROFILE=fast overrides DEV's built-in default" \

@@ -1,0 +1,3 @@
+# feature-team (skills/feature-team) scratch and local-only config
+.tmp/
+.feature-team/config.local.yaml

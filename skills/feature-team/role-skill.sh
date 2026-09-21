@@ -3,8 +3,8 @@
 # tell an agent "read this file first" without anyone hardcoding a layout.
 #
 # Usage:
-#   role-skill.sh <pm|sa|dev|tester|handoff|git|security>   # one path
-#   role-skill.sh --json                                    # all, as JSON
+#   role-skill.sh <pm|sa|dev|tester|reviewer|handoff|git|security>   # one path
+#   role-skill.sh --json                                             # all, as JSON
 #
 # Exits 1 with a message if the requested skill is not installed — a missing
 # contract must be visible, not silently skipped. Needed on resume too: a
@@ -16,7 +16,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=agent-env.sh
 . "$here/agent-env.sh"
 
-arg="${1:?usage: role-skill.sh <pm|sa|dev|tester|handoff|git|security> | --json}"
+arg="${1:?usage: role-skill.sh <pm|sa|dev|tester|reviewer|handoff|git|security> | --json}"
 
 if [ "$arg" = "--json" ]; then
   command -v jq >/dev/null || { echo "jq required for --json"; exit 1; }

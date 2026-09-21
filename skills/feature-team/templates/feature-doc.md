@@ -113,9 +113,12 @@ and never paste a worker's full report into it. Each entry is one stamp:
   Next:
   <concrete next action — omit only when STATUS is DONE>
 
-STAGE is one of: PM SA DEV TESTER GIT CI PR SYSTEM
+STAGE is one of: PM SA DEV TESTER REVIEWER GIT CI PR SYSTEM (REVIEWER only
+when this feature/repo has the optional Reviewer role enabled)
 STATUS is one of: STARTED PLANNED IN_PROGRESS PASS FAIL BLOCKED
-CHANGES_REQUESTED READY RETRY RESUMED DONE
+CHANGES_REQUESTED READY RETRY RESUMED DONE (SYSTEM stamps also use
+MODEL_CONFIGURED/MODEL_ESCALATED/MODEL_UNAVAILABLE — see feature-team/
+SKILL.md § Progress Log for model-configuration events specifically)
 
 Detailed evidence (full test output, stack traces, command transcripts)
 belongs in a separate report file (e.g. .tmp/tester-report-1.md), referenced
@@ -181,22 +184,46 @@ max_retries: 3
 next_action:
 blocking_reason:
 notified: false
+complexity: normal
+reviewer_enabled: false
 pm_kind:
+pm_connection:
+pm_provider:
+pm_profile:
 pm_model:
 sa_kind:
+sa_connection:
+sa_provider:
+sa_profile:
 sa_model:
 dev_kind:
+dev_connection:
+dev_provider:
+dev_profile:
 dev_model:
 tester_kind:
+tester_connection:
+tester_provider:
+tester_profile:
 tester_model:
+reviewer_kind:
+reviewer_connection:
+reviewer_provider:
+reviewer_profile:
+reviewer_model:
 ```
 
-`*_kind`/`*_model` record the effective provider/model each role actually
-started with (from spawn-team.sh's JSON output — see feature-team/SKILL.md
-§ Model selection). On resume, a role keeps this same provider/model unless
-the user explicitly changes it or PM explicitly escalates it (e.g. Dev
-balanced → strong after a defect) — record any such change here AND as its
-own Progress Log stamp, not silently.
+`*_kind`/`*_connection`/`*_provider`/`*_profile`/`*_model` record the
+effective configuration each role actually started with (from
+spawn-team.sh's JSON output — see feature-team/SKILL.md § Model selection
+and § Feature-level model persistence). This block, once written at
+kickoff, is this feature's own immutable model configuration: on resume, a
+role keeps this same connection/provider/profile/model even if the
+repository's or user's config has since changed, unless the user explicitly
+changes it or PM explicitly escalates it (e.g. Dev balanced → strong after
+a defect) — record any such change here AND as its own Progress Log stamp
+(STAGE `SYSTEM`, e.g. `MODEL_ESCALATED`), never silently. `reviewer_*`
+fields stay blank when `reviewer_enabled` is false.
 
 ### State values
 

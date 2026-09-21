@@ -12,9 +12,13 @@
 #     --result "<current outcome>" [--next "<next action>"] \
 #     [--set key=value ...] [--comment]
 #
-# STAGE:  PM SA DEV TESTER GIT CI PR SYSTEM
+# STAGE:  PM SA DEV TESTER REVIEWER GIT CI PR SYSTEM (REVIEWER only when the
+#         optional Reviewer role is enabled — feature-team/SKILL.md
+#         § Optional Reviewer role)
 # STATUS: STARTED PLANNED IN_PROGRESS PASS FAIL BLOCKED CHANGES_REQUESTED
 #         READY RETRY RESUMED DONE
+# Model-configuration events (STAGE SYSTEM — see feature-team/SKILL.md
+# § Progress Log): MODEL_CONFIGURED MODEL_ESCALATED MODEL_UNAVAILABLE
 # Other values are accepted with a warning rather than rejected outright —
 # but reuse one of the above unless nothing genuinely fits; do not invent a
 # new status just to describe this stamp more precisely (feature-pm).
@@ -59,11 +63,11 @@ shift 3
 stage="$(printf '%s' "$stage" | tr '[:lower:]' '[:upper:]')"
 status="$(printf '%s' "$status" | tr '[:lower:]' '[:upper:]')"
 
-case " PM SA DEV TESTER GIT CI PR SYSTEM " in
+case " PM SA DEV TESTER REVIEWER GIT CI PR SYSTEM " in
   *" $stage "*) ;;
   *) echo "warn: '$stage' is not one of the standard stages (PM SA DEV TESTER GIT CI PR SYSTEM) — using it anyway" >&2 ;;
 esac
-case " STARTED PLANNED IN_PROGRESS PASS FAIL BLOCKED CHANGES_REQUESTED READY RETRY RESUMED DONE " in
+case " STARTED PLANNED IN_PROGRESS PASS FAIL BLOCKED CHANGES_REQUESTED READY RETRY RESUMED DONE MODEL_CONFIGURED MODEL_ESCALATED MODEL_UNAVAILABLE " in
   *" $status "*) ;;
   *) echo "warn: '$status' is not one of the standard statuses — using it anyway" >&2 ;;
 esac
